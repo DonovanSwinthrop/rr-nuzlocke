@@ -1,0 +1,9 @@
+{
+  "name": "Radical Red Nuzlocke Overlay",
+  "short_name": "RR Overlay",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#13151a",
+  "theme_color": "#13151a"
+}

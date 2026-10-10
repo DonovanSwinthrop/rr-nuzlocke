@@ -1,0 +1,98 @@
+:root { --tint: 255,255,255; --on-accent: var(--on-accent); --accent-rgb: 255,93,82; --panel-rgb: 27,30,37; --glass: rgba(19,21,26,.96); --bad: #ff7b70; --bg: #13151a; --panel: #1b1e25; --line: rgba(var(--tint),.1); --ink: #eceef2; --muted: #9aa3ae; --accent: #ff5d52; --good: #5fd08f; --warn: #f0b73d; }
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+* { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+input, select, textarea { -webkit-user-select: text; user-select: text; -webkit-touch-callout: default; }
+/* no text selection, magnifier or long-press menu anywhere in the app (it got in the way of the controls) */
+html, body, #app, button, .btn, nav, header, #pad, #dpad, #screenWrap { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; touch-action: manipulation; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); font: 14px/1.4 -apple-system, "Segoe UI", system-ui, sans-serif; overscroll-behavior: none; }
+body { padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+#app { display: flex; flex-direction: column; height: 100%; max-width: 900px; margin: 0 auto; }
+.muted { color: var(--muted); } .small { font-size: 12px; }
+#bar { display: flex; align-items: center; gap: 8px; padding: 6px 12px; }
+#bar #status { flex: 1; min-width: 0; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: rgba(var(--tint), .3); display: inline-block; flex: none; }
+.dot.on { background: var(--good); box-shadow: 0 0 6px var(--good); } .dot.small { width: 7px; height: 7px; vertical-align: middle; }
+.pill { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 999px; padding: 4px 11px; font: inherit; }
+.pill.on { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+#screenWrap { position: relative; width: 100%; aspect-ratio: 3 / 2; background: #000; flex: none; }
+#canvas { width: 100%; height: 100%; display: block; image-rendering: pixelated; image-rendering: crisp-edges; }
+#pausedNote { position: absolute; top: 8px; right: 8px; background: rgba(0,0,0,.6); padding: 2px 8px; border-radius: 6px; font-size: 12px; }
+#switch { display: flex; gap: 6px; padding: 8px 12px; }
+#switch button { flex: 1; border: 1px solid var(--line); background: var(--panel); color: var(--muted); border-radius: 9px; padding: 8px; font: 600 14px inherit; }
+#switch button.on { color: var(--ink); border-color: var(--accent); }
+.view { flex: 1; min-height: 0; }
+#overlay iframe { width: 100%; height: 100%; border: 0; display: block; background: var(--bg); }
+/* controls */
+#pad { display: flex; flex-direction: column; justify-content: space-around; padding: 6px 18px 14px; user-select: none; -webkit-user-select: none; touch-action: none; }
+.shoulders { display: flex; justify-content: space-between; }
+.btn { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 10px; padding: 9px 14px; font: 600 14px inherit; text-align: center; cursor: pointer; user-select: none; -webkit-user-select: none; touch-action: none; }
+.btn.pressed { background: rgba(var(--tint), .16); transform: scale(.96); }
+.btn.sh { width: 30%; padding: 10px; }
+.padrow { display: flex; align-items: center; justify-content: space-between; }
+#dpad { position: relative; width: 150px; height: 150px; touch-action: none; }
+#dpad span { position: absolute; background: var(--panel); border: 1px solid var(--line); }
+#dpad .u, #dpad .d { left: 50px; width: 50px; height: 52px; } #dpad .u { top: 0; border-radius: 8px 8px 0 0; } #dpad .d { bottom: 0; border-radius: 0 0 8px 8px; }
+#dpad .l, #dpad .r { top: 50px; width: 52px; height: 50px; } #dpad .l { left: 0; border-radius: 8px 0 0 8px; } #dpad .r { right: 0; border-radius: 0 8px 8px 0; }
+#dpad i { position: absolute; left: 50px; top: 50px; width: 50px; height: 50px; background: var(--panel); }
+#dpad span.pressed { background: rgba(var(--tint), .16); }
+.ab { display: flex; gap: 14px; align-items: center; transform: rotate(-20deg); }
+.btn.round { width: 70px; height: 70px; border-radius: 50%; font-size: 20px; padding: 0; }
+.btn.round.a { background: rgba(var(--accent-rgb), .2); border-color: rgba(var(--accent-rgb), .5); } .btn.round.a.pressed { background: rgba(var(--accent-rgb), .36); }
+.ss { display: flex; justify-content: center; gap: 22px; }
+.small-btn { padding: 6px 16px; font-size: 12px; border-radius: 999px; }
+/* sheets */
+.sheet { position: absolute; inset: 0; background: var(--glass); padding: 18px; overflow: auto; z-index: 5; }
+.sheet h2 { margin: 0 0 8px; }
+.btn.big { display: inline-block; padding: 12px 20px; background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.modal { position: fixed; inset: 0; padding: calc(18px + env(safe-area-inset-top)) 18px 18px; z-index: 20; }
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 10px 0; }
+.chk, .row { display: flex; align-items: center; gap: 8px; margin: 10px 0; }
+.row select, .row input { flex: 1; }
+[hidden] { display: none !important; }
+/* landscape: the game on the left with see-through controls over it, the overlay always open on the right */
+@media (orientation: landscape) and (max-height: 600px) {
+  #app { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); max-width: none; height: 100%; }
+  #bar { grid-column: 1 / -1; padding: 2px 10px; }
+  #screenWrap { grid-column: 1; grid-row: 2; aspect-ratio: auto; height: 100%; position: relative; }
+  #canvas { object-fit: contain; }
+  #switch { display: none; }
+  #overlay { grid-column: 2; grid-row: 2; display: block !important; }
+  #pad { grid-column: 1; grid-row: 2; display: block !important; position: relative; z-index: 3; pointer-events: none; padding: 0; }
+  #pad > * { pointer-events: auto; }
+  #pad .shoulders { position: absolute; top: 6px; left: 6px; right: 6px; pointer-events: none; }
+  #pad .shoulders .btn { pointer-events: auto; width: 64px; padding: 6px; }
+  #pad .padrow { position: absolute; left: 4px; right: 4px; bottom: 34px; pointer-events: none; }
+  #pad .padrow > * { pointer-events: auto; }
+  #pad .ss { position: absolute; bottom: 4px; left: 0; right: 0; pointer-events: none; }
+  #pad .ss .btn { pointer-events: auto; }
+  #pad .btn, #dpad span, #dpad i { background: rgba(var(--panel-rgb), .45); border-color: rgba(var(--tint),.18); }
+  #pad .btn.pressed, #dpad span.pressed { background: rgba(var(--tint), .28); }
+  #dpad { width: 120px; height: 120px; } #dpad .u, #dpad .d { left: 40px; width: 40px; height: 42px; } #dpad .l, #dpad .r { top: 40px; width: 42px; height: 40px; } #dpad i { left: 40px; top: 40px; width: 40px; height: 40px; }
+  .btn.round { width: 56px; height: 56px; }
+  .btn.round.a { background: rgba(var(--accent-rgb), .3); }
+}
+#busy { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.7); font-weight: 600; z-index: 6; }
+#padNote { white-space: nowrap; }
+
+.seg { display: inline-flex; flex-wrap: wrap; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
+.seg button { border: 0; background: var(--panel); color: var(--muted); padding: 7px 10px; font: 600 13px inherit; }
+.seg button.on { background: var(--accent); color: var(--on-accent); }
+
+#slots { display: grid; gap: 6px; margin: 6px 0; }
+#slots .slot { display: flex; align-items: center; gap: 6px; background: var(--panel); border: 1px solid var(--line); border-radius: 9px; padding: 6px 8px; }
+#slots .slot span { flex: 1; min-width: 0; } #slots .btn { padding: 6px 12px; font-size: 13px; } #slots .btn[disabled] { opacity: .35; }
+
+/* theme picker (themes.js) */
+.themes { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 6px; margin: 6px 0; }
+.thm { display: flex; align-items: center; gap: 7px; border: 2px solid; border-radius: 9px; padding: 7px 9px; font: 600 12px inherit; cursor: pointer; text-align: left; }
+.thm i { width: 14px; height: 14px; border-radius: 50%; flex: none; }
+.thm.on { box-shadow: 0 0 0 1px var(--accent); }
+.thmacc { display: flex; align-items: center; gap: 8px; margin: 6px 0; font-size: 12px; }
+.thmacc input[type=color] { width: 38px; height: 26px; border: 1px solid var(--line); border-radius: 6px; background: none; padding: 0; }
+.thmacc button { border: 1px solid var(--line); background: none; color: var(--ink); border-radius: 6px; padding: 3px 8px; font-size: 11px; }
+
+#cloudBanner { padding: 8px 12px; background: rgba(var(--accent-rgb), .14); border-bottom: 1px solid rgba(var(--accent-rgb), .45); font-size: 13px; }
+#cloudBanner .btn { padding: 6px 12px; font-size: 13px; margin: 6px 6px 0 0; }
+#cloudMenu input { flex: 1; min-width: 0; font: inherit; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); }
+/* landscape: the grid has no row for it, so it floats over the top of the game until you answer it */
+@media (orientation: landscape) and (max-height: 600px) { #cloudBanner { position: fixed; z-index: 15; top: calc(4px + env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); width: min(560px, 94vw); border: 1px solid rgba(var(--accent-rgb), .6); border-radius: 12px; background: var(--glass); box-shadow: 0 6px 24px rgba(0,0,0,.5); } }

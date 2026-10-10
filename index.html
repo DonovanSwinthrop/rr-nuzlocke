@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="RR Nuzlocke">
+<meta name="theme-color" content="#13151a">
+<title>RR Nuzlocke</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="icon" href="icon-192.png">
+<link rel="stylesheet" href="app.css">
+<script src="overlay/themes.js"></script>
+<script>
+  // Typing in a text box (cloud code, slot names): keep the keys away from the emulator and the game controls, which
+  // listen on the whole page and cancel key presses. Registered first, in the capture phase, so it runs before them.
+  ['keydown', 'keypress', 'keyup', 'input'].forEach(t => window.addEventListener(t, e => {
+    const el = e.target;
+    if (el && el.closest && el.closest('input, textarea, select, [contenteditable]')) e.stopImmediatePropagation();
+  }, true));
+</script>
+<script src="version.js"></script>
+<!-- Offline helper (sw.js): keeps every app file on the phone so it opens and plays without internet, and adds the
+     security headers the emulator's threads need (so it also works offline and on hosts that can't set them). -->
+<script>
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('sw.js').then(reg => {
+      reg.addEventListener('updatefound', () => { window.__updateFound = true; });
+    }).catch(() => {});
+    // first visit on a host without the headers: once the helper is in charge, reload once so the page is isolated
+    if (!window.crossOriginIsolated) navigator.serviceWorker.ready.then(() => {
+      try { if (sessionStorage.getItem('rr-iso-reload')) return; sessionStorage.setItem('rr-iso-reload', '1'); } catch (e) { /* ignore */ }
+      location.reload();
+    });
+  }
+</script>
+<script>
+  /* Time of day for the game only. The emulator's cartridge clock reads Date.now(); in a fixed mode the hour is pinned
+     (minutes keep running) so the game sees morning / day / dusk / night. Your phone's clock is never changed.
+     Radical Red: morning 4:00-8:00, day 8:00-17:00, dusk 17:00-20:00, night 20:00-4:00. */
+  window.GAME_HOURS = { morning: 6, day: 12, dusk: 18, night: 22 };
+  window.TIME_CODES = { real: 0, morning: 1, day: 2, dusk: 3, night: 4 };
+  window.__timeMode = (function () { try { return JSON.parse(localStorage.getItem('rrweb-prefs') || '{}').time || 'real'; } catch (e) { return 'real'; } })();
+  // shared with the emulator's threads (they read the cartridge clock); needs the page to be cross-origin isolated
+  window.__rrClock = typeof SharedArrayBuffer !== 'undefined' ? new Int32Array(new SharedArrayBuffer(4)) : new Int32Array(1);
+  window.__rrClock[0] = window.TIME_CODES[window.__timeMode] || 0;
+  (function () {
+    const realNow = Date.now.bind(Date);
+    Date.now = function () {
+      const t = realNow(), h = window.GAME_HOURS[window.__timeMode];
+      if (h == null) return t;
+      const d = new Date(t); d.setHours(h); return d.getTime();
+    };
+    const RealWorker = window.Worker;
+    if (RealWorker) {
+      const Hooked = function (url, opts) { const w = new RealWorker(url, opts); try { if (window.__rrClock.buffer instanceof SharedArrayBuffer) w.postMessage({ rrClock: window.__rrClock.buffer }); } catch (e) { /* ignore */ } return w; };
+      Hooked.prototype = RealWorker.prototype;
+      window.Worker = Hooked;
+    }
+  })();
+</script>
+<script>
+  // Catch the WebAssembly memory the emulator creates, so the overlay can read the game's RAM.
+  window.__mems = [];
+  (function () {
+    const Real = WebAssembly.Memory;
+    function Hooked(desc) { const m = new Real(desc); window.__mems.push(m); return m; }
+    Hooked.prototype = Real.prototype;
+    WebAssembly.Memory = Hooked;
+  })();
+</script>
+</head>
+<body>
+<div id="app">
+  <header id="bar">
+    <span id="dot" class="dot" title="Overlay link"></span>
+    <b>RR Nuzlocke</b>
+    <span id="status" class="muted"></span>
+    <span id="padNote" class="muted small"></span>
+    <button id="pauseBtn" class="pill" title="Pause / play (the only thing that pauses the game)">⏸ Pause</button>
+    <button id="timeBtn" class="pill" title="Time of day in the game">Real</button>
+    <button id="ff" class="pill" title="Fast forward">▶▶</button>
+    <button id="menuBtn" class="pill" title="Menu">☰</button>
+  </header>
+
+  <div id="cloudBanner" hidden></div>
+  <div id="screenWrap">
+    <canvas id="canvas" width="240" height="160"></canvas>
+    <div id="welcome" class="sheet" hidden>
+      <h2>Radical Red on your phone</h2>
+      <p>Pick your Radical Red ROM (.gba) from the Files app. It stays on this phone and is never uploaded.</p>
+      <label class="btn big">Choose ROM<input id="romInput" type="file" accept=".gba,application/octet-stream" hidden></label>
+      <p class="muted small">Already playing on PC? After the ROM, open ☰ → <b>Cloud saves</b> and enter the code from the PC overlay.</p>
+    </div>
+    <div id="pausedNote" hidden>Paused</div>
+    <div id="busy" hidden></div>
+    <div id="frozen" class="sheet" hidden>
+      <h2>Game froze</h2>
+      <p id="frozenWhy" class="muted"></p>
+      <button class="btn big" id="frozenGo">Recover</button> <button class="btn" id="frozenWait">Wait</button>
+      <p class="muted small">If this keeps happening after long sessions, turn on Battery saver in ☰ (the phone heats up and slows down) and let the game save often.</p>
+    </div>
+  </div>
+
+  <nav id="switch">
+    <button data-view="pad" class="on">Controls</button>
+    <button data-view="overlay">Overlay <span id="odot" class="dot small"></span></button>
+  </nav>
+
+  <section id="pad" class="view">
+    <div class="shoulders"><button class="btn sh" data-key="L">L</button><button class="btn sh" data-key="R">R</button></div>
+    <div class="padrow">
+      <div id="dpad" aria-label="D-pad"><span class="u"></span><span class="d"></span><span class="l"></span><span class="r"></span><i></i></div>
+      <div class="ab"><button class="btn round b" data-key="B">B</button><button class="btn round a" data-key="A">A</button></div>
+    </div>
+    <div class="ss"><button class="btn small-btn" data-key="Select">Select</button><button class="btn small-btn" data-key="Start">Start</button></div>
+  </section>
+
+  <section id="overlay" class="view" hidden>
+    <iframe id="ov" src="overlay/overlay.html?embed" title="Overlay"></iframe>
+  </section>
+</div>
+
+<div id="menu" class="sheet modal" hidden>
+  <h2>Menu <small id="verTag" class="muted"></small></h2>
+  <div class="grid">
+    <label class="btn">Load ROM<input id="romInput2" type="file" accept=".gba,application/octet-stream" hidden></label>
+    <label class="btn">Import .sav file<input id="savInput" type="file" accept=".sav,.srm,application/octet-stream" hidden></label>
+    <button class="btn" id="undoImport" hidden>Undo last import</button>
+    <button class="btn" id="reset">Reset game</button>
+    <button class="btn" id="reloadOv">Reload overlay</button>
+  </div>
+  <h3>Cloud saves</h3>
+  <div id="cloudMenu"></div>
+  <h3>Save states</h3>
+  <div id="slots"></div>
+  <label class="row">Auto save state every <select id="autoMins"><option value="0">Off</option><option value="1">1 min</option><option value="2">2 min</option><option value="3">3 min</option><option value="5">5 min</option><option value="10">10 min</option></select></label>
+  <p class="muted small">Auto states rotate through 3 slots, and one is also saved whenever you leave the app. They are separate from your in-game save: if the app ever freezes, load the newest auto state.</p>
+  <div class="row">Time of day <div id="timeSeg" class="seg">
+    <button data-time="real">Real</button><button data-time="morning">Morning</button><button data-time="day">Day</button><button data-time="dusk">Dusk</button><button data-time="night">Night</button></div></div>
+  <p class="muted small">Only the game's clock changes (morning 6:00, day 12:00, dusk 18:00, night 22:00). Your phone's time stays the same. The game picks it up within a few seconds outdoors.</p>
+  <h3>Theme</h3>
+  <div id="themePick"></div>
+  <label class="chk"><input type="checkbox" id="swapAB"> Controller: swap A and B (Nintendo-style layout)</label>
+  <label class="chk"><input type="checkbox" id="saver"> Battery saver: draw every other frame (less heat on long sessions; the game runs at full speed)</label>
+  <label class="row">Fast forward <select id="ffSpeed"><option value="2">2×</option><option value="3" selected>3×</option><option value="4">4×</option></select></label>
+  <label class="row">Volume <input id="vol" type="range" min="0" max="1" step="0.05" value="1"></label>
+  <p class="muted small">Save in the game (Start → Save) before exporting: the export is the game's own save file. Safari can clear a site's storage if you don't open it for a few weeks; adding this page to your Home Screen keeps it, and an exported backup is always safe.</p>
+  <p class="muted small">Controller: A/Cross = A, B/Circle = B, LB/RB = L/R, Start, Back/Share = Select, d-pad or stick to move, hold RT/R2 to fast forward, LT/L2 switches between controls and overlay.</p>
+  <p class="muted small">Keyboard: arrows, Z = A, X = B, A/S = L/R, Enter = Start, Backspace = Select, Space = fast forward.</p>
+  <button class="btn" id="closeMenu">Close</button>
+</div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
