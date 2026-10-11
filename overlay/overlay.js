@@ -149,6 +149,9 @@ function scoreIntim(me, foe, f, how) {
   }
   const r = scorePair(me, foe, f); r.intim = notes.join(' · '); return r;
 }
+// Best answer first; ties (several that all OHKO, say) go to the one that takes least, then the faster one, then the one that
+// hits hardest, then by name, so the pick never depends on who happens to be in the party.
+const ansCmp = (x, y) => (y.r.s - x.r.s) || ((x.r.worstDef ? x.r.worstDef.hiP : 0) - (y.r.worstDef ? y.r.worstDef.hiP : 0)) || ((y.r.fast ? 1 : 0) - (x.r.fast ? 1 : 0)) || ((y.r.bestOff ? y.r.bestOff.loP : 0) - (x.r.bestOff ? x.r.bestOff.loP : 0)) || String(x.me.m.nick || x.me.m.species).localeCompare(String(y.me.m.nick || y.me.m.species)) || String(x.me.m.species).localeCompare(String(y.me.m.species));
 const intimTag = r => r && r.intim ? `<br><span class="small" style="color:var(--warn)">${esc(r.intim)}</span>` : '';
 
 function bossField(b) {
@@ -705,7 +708,7 @@ function renderPanel(force) {
   if (ST) {
     if (tab === 'battle') key += battleView === 'bosses' ? '|bosses|' + bossSel + '|' + bossMonSel + '|' + bossAtCap + '|' + [...bossLineShown].join(',') + '|' + ST.flags + ST.party + PC.length + '|' + ST.inBattle : ST.inBattle + ST.battleMons + ST.enemy + ST.party + ST.partyIdx;
     else if (tab === 'route') key += ST.mapsec + '|' + (ST.map || '') + '|' + allFloors + ST.party + PC.length + DEAD.length + '|' + window.__gameHour + '|' + (PREF.failed || []).join(',') + encOpen + (ST.flags || '');
-    else if (tab === 'next') key += ST.flags + ST.party + PC.length;
+    else if (tab === 'next') key += ST.flags + ST.party + PC.length + '|' + nextAtCap + '|' + !!window.RR_DEX;
     else if (tab === 'team') key += ST.party + PC.length + DEAD.length;
   }
   if (!force && key === lastPanelKey) return;
@@ -985,13 +988,16 @@ function bossesHTML() {
   const nx = nextOrder();
   const o = left.find(x => x.n === bossSel) || nx || left[0];
   const bi = pickB(o), b = BOSS[bi], f = bossField(b);
-  const all = bossMine(o), party = all.filter(x => x.party), mine = party.length ? party : all;
   const foes = b.mons.map(m => ({ m, moves: m.mv, p: mk(bossOpts(b, m)) })).filter(x => x.p);
+  // at the cap: the same fully evolved, cap-trained Pokémon as the Next tab's best answers
+  const built = bossAtCap ? capTeam(o, foes, f) : null;
+  const all = built && built.length ? built.map(x => Object.assign({}, x, { name: x.from.nick || x.from.species, species: x.m.species, hp: 100, party: PARTY.includes(x.from) })) : bossMine(o);
+  const party = all.filter(x => x.party), mine = party.length ? party : all;
   if (bossMonSel != null && !b.mons[bossMonSel]) bossMonSel = null;
   const top = topLevel(), gap = capOf(o) - top;
   // per opponent: your best answer, and how many of yours it can KO from full
   const rows = foes.map(fo => {
-    const sc = mine.map(me => ({ me, r: scoreIntim(me, fo, f) })).sort((x, y) => y.r.s - x.r.s);
+    const sc = mine.map(me => ({ me, r: scoreIntim(me, fo, f) })).sort(ansCmp);
     const kos = sc.filter(x => x.r.worstDef.hiP >= 100).length, walled = sc.filter(x => x.r.bestOff.hiP < 34).length;
     return { fo, best: sc[0], kos, walled };
   });
@@ -1003,7 +1009,7 @@ function bossesHTML() {
       <p class="muted small">${esc(tc(o.loc))}${f.doubles ? ' · double battle' : ''}${f.weather ? ' · ' + esc(f.weather) : ''}${f.terrain ? ' · ' + esc(f.terrain) + ' Terrain' : ''}${o.opt ? ' · optional' : ''}${nx && o.n > nx.n ? ` · ${left.filter(x => !x.opt && x.n < o.n).length} required fight${left.filter(x => !x.opt && x.n < o.n).length === 1 ? '' : 's'} before it` : ''}</p>
       <div class="strip">${b.mons.map((m, k) => `<button data-bmon="${k}" class="${k === bossMonSel ? 'on' : ''}" title="${esc(m.s)}${m.it ? ' @ ' + esc(m.it) : ''}">${spr(m.s, 32)}<small>Lv${bossLevel(b, m)}</small></button>`).join('')}</div>
       <p class="small muted">${bossMonSel == null ? 'Click one of their Pokémon for its set, stats and switch-in damage.' : ''}</p>
-      <label class="chk small"><input type="checkbox" id="bossCap"${bossAtCap ? ' checked' : ''}> Your Pokémon at the level cap (Lv ${capOf(o)})</label>
+      <label class="chk small"><input type="checkbox" id="bossCap"${bossAtCap ? ' checked' : ''}> Your Pokémon at the level cap (Lv ${capOf(o)}), fully evolved</label>
       <p class="small ${gap > 0 ? 'warntxt' : 'goodtxt'}">Your highest level is ${top}: ${gap > 0 ? `${gap} level${gap === 1 ? '' : 's'} under the cap` : 'at the cap'}.</p>
       <p><button class="back" id="bossTC">Theory craft this fight</button></p></div>
     ${bossMonSel != null ? bossMonHTML(b, b.mons[bossMonSel], f, mine, all) : ''}
@@ -1021,7 +1027,7 @@ function bossesHTML() {
 // Box Pokémon that answer something on their team better than anything in your party.
 function bossBoxHTML(rows, box, f) {
   const picks = rows.map(r => {
-    const b = box.map(me => ({ me, r: scoreIntim(me, r.fo, f) })).sort((x, y) => y.r.s - x.r.s)[0];
+    const b = box.map(me => ({ me, r: scoreIntim(me, r.fo, f) })).sort(ansCmp)[0];
     return b && r.best && b.r.s > r.best.r.s + 0.5 ? { fo: r.fo, b } : null;
   }).filter(Boolean);
   if (!picks.length) return '';
@@ -1308,21 +1314,73 @@ function tcStartBattle() {
   }
   tcSB = S ? { S, key: o.n + '|' + team.map(m => m.pid).join(',') + '|' + JSON.stringify(PREF.tcSets || {}) + tcHp } : null;
 }
+/* Your Pokémon as they'd be for a fight: every one you have (party and boxes 1-19, so who's in the party doesn't matter),
+   at full HP, trained to the cap, and in every fully evolved form it can reach by then (each branch tried), with the
+   best moves it can learn or be taught by that point. Cached per fight and save. */
+let nextAtCap = true;
+const capCache = { key: '', list: null };
+function capTeam(o, foes, f) {
+  if (!window.RR_DEX) { loadDex(); return null; }
+  const key = [o.n, ST && ST.flags, ST && ST.party, PC.map(m => m.pid + ':' + m.level + ':' + m.species).join(','), JSON.stringify(f)].join('|');
+  if (capCache.key === key) return capCache.list;
+  const sec = splitSec(), beaten = [...beatenSet()], list = [];
+  alive().filter(m => m.level && m.species).forEach(m => {
+    const seen = new Set();
+    RRBuild.fullForms(m.species, Math.max(o.cap, m.level)).forEach(form => {
+      // a step that needs a stone, Link Cable or held item you can't get by now: it stops at the stage before
+      let path = form.path.map(x => Object.assign({}, x, { item: evoItem(x.how) }));
+      const stop = path.findIndex(x => x.item && x.item.where === null);
+      if (stop >= 0) path = path.slice(0, stop);
+      const species = path.length ? path[path.length - 1].to : m.species;
+      if (seen.has(species)) return; seen.add(species);
+      form = { species, path };
+      let b = null; try { b = RRBuild.buildAtCap({ m, foes, f, cap: o.cap, sec: sec == null ? 999 : sec, beaten, nextN: o.n, form }); } catch (e) { b = null; }
+      if (!b) return;
+      const p = mk(Object.assign({}, b.opts, { hp: 100, status: '' }));
+      if (p) list.push({ m: Object.assign({}, m, { species: b.species }), from: m, moves: b.moves, p, build: b });
+    });
+  });
+  capCache.key = key; capCache.list = list;
+  return list;
+}
+// The item an evolution step needs ("with a ThunderStone" -> Thunder Stone) and where you can get it by now
+// (where: text, '' = not linked to the game so unknown, null = not until later).
+function evoItem(how) {
+  const mt = /^with an? (.+)$/i.exec(how || ''); if (!mt || !window.RR_ITEMS) return null;
+  const want = mt[1].replace(/\s/g, '').toLowerCase();
+  if (!evoItem.names) evoItem.names = [...new Set(window.RR_ITEMS.all.map(r => r[0]))];
+  const name = evoItem.names.find(n => n.replace(/\s/g, '').toLowerCase() === want) || mt[1];
+  return { name, where: itemAvail(name) };
+}
+// "needs" for a built answer: how it evolves (non-level steps) and any new move its best hit uses
+function capNeeds(me, r) {
+  if (!me.build) return '';
+  const ev = (me.build.evolved || []).map(x => (x.lv ? `evolves to ${x.to} at Lv ${x.lv}` : x.item ? `${x.to}: ${x.item.name}${x.item.where ? ' (' + x.item.where + ')' : ''}` : `${x.to}: ${x.how.replace(/^on Level Up with /, 'level up with ')}`));
+  const mv = r && r.bestOff && me.build.newMoves.find(x => x.name === r.bestOff.name);
+  const teach = mv ? `${mv.name}: ${mv.how === 'level-up' ? 'by level-up' : mv.how}` : '';
+  const all = ev.concat(teach ? [teach] : []);
+  return all.length ? `<br><span class="small muted" title="${esc(all.join(' · '))}">${esc(all.join(' · ').slice(0, 90))}${all.join(' · ').length > 90 ? '…' : ''}</span>` : '';
+}
 function nextFightHTML(nx) {
   const bi = pickB(nx), b = BOSS[bi], f = bossField(b);
   const upcoming = D.order.filter(o => o.n >= nx.n && !orderBeaten(o)).slice(0, 6);
-  const mine = alive().filter(m => m.level).map(m => ({ m, moves: m.moves, p: mk(monCalcOpts(m)) })).filter(x => x.p);
   const foes = b.mons.map(m => ({ m, moves: m.mv, p: mk(bossOpts(b, m)) })).filter(x => x.p);
+  const now = alive().filter(m => m.level).map(m => ({ m, moves: m.moves, p: mk(Object.assign(monCalcOpts(m), { hp: 100, status: '' })) })).filter(x => x.p);
+  const built = nextAtCap ? capTeam(nx, foes, f) : null;
+  const mine = built && built.length ? built : now;
   if (nextFor !== bi) { nextFor = bi; nextMon = null; } // a new fight starts with nothing picked
   const sel = nextMon;
   return `<div class="card"><span class="muted small">Next required fight</span><div class="row between"><h2>${esc(tc(nx.name))}</h2><span class="tag">cap ${nx.cap}</span></div>
       <p class="muted small">${esc(tc(nx.loc))}${f.doubles ? ' · double battle' : ''}${f.weather ? ' · ' + esc(f.weather) : ''}</p>
       <div class="strip">${b.mons.map((m, k) => `<button data-nmon="${k}" class="${k === sel ? 'on' : ''}" title="${esc(m.s)}">${spr(m.s, 32)}<small>Lv${bossLevel(b, m)}</small></button>`).join('')}</div>
       <p class="small muted">${sel == null ? 'Click a Pokémon to see its moves, stats and your best answers.' : ''}</p>
-      <label class="chk small"><input type="checkbox" id="nIntim"${PREF.intim !== false ? ' checked' : ''}> Count Intimidate when a Pokémon comes in</label></div>
+      <label class="chk small"><input type="checkbox" id="nIntim"${PREF.intim !== false ? ' checked' : ''}> Count Intimidate when a Pokémon comes in</label>
+      <label class="chk small"><input type="checkbox" id="nCap"${nextAtCap ? ' checked' : ''}> Answers trained to the cap (Lv ${nx.cap}), fully evolved</label></div>
     ${sel != null && b.mons[sel] ? bossMonHTML(b, b.mons[sel], f, mine) : ''}
     <h3>Your best answer to each</h3>
-    <table><tbody>${foes.map(fo => { const r = mine.map(me => ({ me, r: scoreIntim(me, fo, f) })).sort((x, y) => y.r.s - x.r.s)[0]; return `<tr><td>${spr(fo.m.s, 24)}</td><td>${esc(fo.m.s)}</td><td>${r ? spr(r.me.m.species, 24) + ' ' + esc(r.me.m.nick || r.me.m.species) : '—'}</td><td class="small muted">${r ? Math.round(r.r.bestOff.loP) + '–' + Math.round(r.r.bestOff.hiP) + '%, takes ' + Math.round(r.r.worstDef.hiP) + '%' + intimTag(r.r) : ''}</td></tr>`; }).join('')}</tbody></table>
+    ${nextAtCap && !built ? '<p class="small muted">Loading the Pokédex to evolve and train your Pokémon…</p>' : ''}
+    <table><tbody>${foes.map(fo => { const r = mine.map(me => ({ me, r: scoreIntim(me, fo, f) })).sort(ansCmp)[0]; const nm = r ? (r.me.from && r.me.from.species !== r.me.m.species ? `${esc(r.me.m.nick || r.me.from.species)} <span class="muted">→ ${esc(r.me.m.species)}</span>` : esc(r.me.m.nick || r.me.m.species)) : '—'; return `<tr><td>${spr(fo.m.s, 24)}</td><td>${esc(fo.m.s)}</td><td>${r ? spr(r.me.m.species, 24) + ' ' + nm + capNeeds(r.me, r.r) : '—'}</td><td class="small muted">${r ? esc(r.r.bestOff.label || '') + ' ' + Math.round(r.r.bestOff.loP) + '–' + Math.round(r.r.bestOff.hiP) + '%, takes ' + Math.round(r.r.worstDef.hiP) + '%' + intimTag(r.r) : ''}</td></tr>`; }).join('')}</tbody></table>
+    <p class="small muted">${built && built.length ? `Every Pokémon you have (party and boxes) at full HP, trained to Lv ${nx.cap} in each fully evolved form it can reach by then, with the best moves it can learn or be taught by now. So it doesn't change with who's in your party.` : 'Every Pokémon you have (party and boxes) as it is now, at full HP.'}</p>
     ${guideFor(b).length ? `<details open><summary>Guide strategy</summary><div class="guide">${guideFor(b).map(guideHTML).join('')}</div></details>` : '<p class="small muted">The guide doesn\'t cover this fight.</p>'}
     <h3>Coming up</h3>
     <table><tbody>${upcoming.map(o => `<tr${o === nx ? ' class="hl"' : ''}><td class="num muted">${o.n}</td><td>${esc(tc(o.name))}${o.opt ? ' <span class="tag">optional</span>' : ''}</td><td class="small muted">${esc(tc(o.loc))}</td><td class="r num">${o.cap}</td></tr>`).join('')}</tbody></table>`;
@@ -1393,7 +1451,7 @@ function bossMonHTML(b, m, f, mine, swList) {
   const ev = o.evs || {}, evTxt = STATK.filter(s => ev[s]).map(s => ev[s] + ' ' + STATL[s]).join(', ');
   const ivTxt = m.iv == null || m.iv === 31 ? '31 in every stat' : '31, except ' + m.iv + ' Speed';
   const foe = p ? { m, moves: m.mv, p } : null;
-  const ans = foe ? mine.map(me => ({ me, r: scoreIntim(me, foe, f) })).sort((x, y) => y.r.s - x.r.s).slice(0, 3) : [];
+  const ans = foe ? mine.map(me => ({ me, r: scoreIntim(me, foe, f) })).sort(ansCmp).slice(0, 3) : [];
   return `<div class="card"><div class="row"><span class="todex" data-todex="${esc(m.s)}" title="Open in the Dex">${spr(m.s, 48)}</span><div style="flex:1;min-width:0"><div class="row between"><b>${esc(m.s)}</b><span class="num">Lv ${o.level}</span></div><div>${chips(m.s)}</div></div></div>
     <dl class="kv"><dt>Nature</dt><dd>${esc(m.nat || '—')}</dd><dt>Ability</dt><dd>${m.ab ? abil(m.ab) : '—'}${m.abM && m.abM !== m.ab ? ` <small class="muted">(Mega: ${abil(m.abM)})</small>` : ''}${m.ab && abilDesc(m.ab) ? `<br><small class="muted">${esc(abilDesc(m.ab))}</small>` : ''}</dd>
       <dt>Item</dt><dd>${esc(m.it || 'None')}</dd><dt>IVs</dt><dd>${ivTxt}</dd><dt>EVs</dt><dd>${evTxt ? esc(evTxt) : 'None'}${ST && (ST.mode & 4) ? ' <small class="muted">(Minimum Grinding)</small>' : ''}</dd></dl>
@@ -1501,6 +1559,7 @@ function bindPanel(el) {
   const iq = $('#itQ', el);
   if (iq) { iq.oninput = () => { itemQ = iq.value; $('#itList', el).innerHTML = itemRows(); }; if (itemQ) { iq.focus(); iq.setSelectionRange(itemQ.length, itemQ.length); } }
   $$('[data-ikind]', el).forEach(b => b.onclick = () => { itemKind = b.dataset.ikind; renderPanel(true); });
+  if ($('#nCap', el)) $('#nCap', el).onchange = e => { nextAtCap = e.target.checked; renderPanel(true); };
   if ($('#nIntim', el)) $('#nIntim', el).onchange = e => { PREF.intim = e.target.checked; savePrefs(); renderPanel(true); };
   $$('[data-nmon]', el).forEach(b => b.onclick = () => { const k = +b.dataset.nmon; nextMon = nextMon === k ? null : k; renderPanel(true); });
   $$('[data-nview]', el).forEach(b => b.onclick = () => { nextView = b.dataset.nview; renderPanel(true); });

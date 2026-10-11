@@ -24,6 +24,18 @@ function evolveTo(species, cap) {
   }
   return { species: s, path };
 }
+/* Every fully evolved form it can reach by the cap: level-ups only up to the cap; stones, trade items, Link Cable and
+   friendship at any time (Mega Stones and Z-Crystals aren't evolutions). Branches (Eevee, Pikachu...) give one form each. */
+function fullForms(species, cap) {
+  const X = dex(), out = [], seen = new Set();
+  (function go(s, path, depth) {
+    const e = X && X.species[s];
+    const steps = e && depth < 4 ? (e.ev || []).filter(([to, how]) => SPEC[to] && !/^with the /i.test(how)).map(([to, how]) => ({ to, how, lv: +((how.match(/Level (\d+)/i) || [])[1] || 0) })).filter(x => !x.lv || x.lv <= cap) : [];
+    if (!steps.length) { if (!seen.has(s)) { seen.add(s); out.push({ species: s, path }); } return; }
+    steps.forEach(st => go(st.to, path.concat([st]), depth + 1));
+  })(species, [], 0);
+  return out;
+}
 // Level-up moves known by the cap (this species and the ones it evolved from).
 function learnable(chain, cap) {
   const X = dex(), out = [];
@@ -191,7 +203,7 @@ function buildAtCap(opt) {
   const { m, foes, f } = opt;
   const cap = Math.max(opt.cap || 1, +m.level || 1);
   const sec = opt.sec != null ? opt.sec : sectionOf(opt.loc);
-  const ev = evolveTo(m.species, cap);
+  const ev = opt.form || evolveTo(m.species, cap);
   const chain = [m.species].concat(ev.path.map(x => x.to));
   const known = (m.moves || []).filter(n => n && MOVES[n]);
   const beaten = opt.beaten ? new Set(opt.beaten) : null;
@@ -228,5 +240,5 @@ function buildAtCap(opt) {
   }
   return { opts: Object.assign({}, o, { moves }), species: ev.species, evolved: ev.path, level: cap, moves, newMoves: moves.filter(n => !known.includes(n)).map(n => ({ name: n, how: src[n] || '' })) };
 }
-root.RRBuild = { use, optimize, evolveTo, sectionOf, buildAtCap };
+root.RRBuild = { use, optimize, evolveTo, fullForms, sectionOf, buildAtCap };
 })(typeof window !== 'undefined' ? window : globalThis);
