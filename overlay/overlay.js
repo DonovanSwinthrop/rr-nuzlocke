@@ -62,7 +62,7 @@ function decodeBattlers(hex) {
     const o = i * 0x58, sp = dv.getUint16(o, true);
     if (!sp || !T.species[sp]) { out.push(null); continue; }
     out.push({
-      i, species: T.species[sp], level: b[o + 0x2A], hp: dv.getUint16(o + 0x28, true), maxHP: dv.getUint16(o + 0x2C, true),
+      i, species: T.species[sp], level: b[o + 0x2A], pid: dv.getUint32(o + 0x48, true), hp: dv.getUint16(o + 0x28, true), maxHP: dv.getUint16(o + 0x2C, true),
       moves: window.RRSave.typedMoves([0, 1, 2, 3].map(k => T.moves[dv.getUint16(o + 0xC + k * 2, true)] || '').filter(Boolean), window.RRSave.ivsOf(dv.getUint32(o + 0x14, true))),
       stages: Array.from(b.slice(o + 0x18, o + 0x20)).map(x => x - 6),
       ability: T.abilities[b[o + 0x20]] || '', item: T.items[dv.getUint16(o + 0x2E, true)] || '',
@@ -288,7 +288,10 @@ function battleInfo() {
   if (!ST || !ST.inBattle || !ST.battleMons) return null;
   const bats = decodeBattlers(ST.battleMons);
   const enemyParty = decodeParty(ST.enemy, 6);
-  const idx = ST.partyIdx ? [0, 1, 2, 3].map(i => parseInt(ST.partyIdx.substr(i * 4 + 2, 2) + ST.partyIdx.substr(i * 4, 2), 16)) : [0, 0, 0, 0];
+  const idx0 = ST.partyIdx ? [0, 1, 2, 3].map(i => parseInt(ST.partyIdx.substr(i * 4 + 2, 2) + ST.partyIdx.substr(i * 4, 2), 16)) : [0, 0, 0, 0];
+  // which party slot each battler is: the game reorders the party when you switch (doubles especially), so the battle's
+  // own slot numbers can point at someone else; match by the Pokémon's personality value, the slot number as a fallback
+  const idx = idx0.map((k, b) => { const bat = bats[b]; if (!bat || bat.pid == null) return k; const list = b % 2 ? enemyParty : PARTY; const m = list.find(x => x.pid === bat.pid); return m ? m.slot : k; });
   const doubles = (ST.battleType & 1) === 1;
   const tId = ST.trainerA, bi = (ST.battleType & 8) ? ID_TO_BOSS[tId] : undefined;
   const boss = bi != null ? BOSS[bi] : null;
