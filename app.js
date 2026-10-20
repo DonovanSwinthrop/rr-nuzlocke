@@ -349,9 +349,29 @@ function setView(v) {
 }
 
 /* ---------- controls ---------- */
-const held = new Set();
-function press(k) { if (!loaded || held.has(k)) return; held.add(k); Module.buttonPress(k); }
-function release(k) { if (!held.has(k)) return; held.delete(k); if (loaded) Module.buttonUnpress(k); }
+/* The game reads the buttons once a frame, so a press shorter than a frame (a trackpad tap-to-click, a quick key tap)
+   could come and go unseen. Every press is held for at least MIN_HOLD ms; a tap made while the last one is still being
+   held is queued and pressed again right after it, so quick double taps count twice. */
+const MIN_HOLD = 50;
+const held = new Map(), later = {}; // key -> when it went down; key -> queued tap while a release is held back
+function press(k) {
+  if (!loaded) return;
+  if (later[k]) { later[k].taps++; later[k].down = true; return; }
+  if (held.has(k)) return;
+  held.set(k, performance.now()); Module.buttonPress(k);
+}
+function release(k) {
+  if (later[k]) { later[k].down = false; return; }
+  if (!held.has(k)) return;
+  const wait = MIN_HOLD - (performance.now() - held.get(k));
+  if (wait > 0) { const q = later[k] = { taps: 0, down: false }; setTimeout(() => finish(k, q), wait); return; }
+  held.delete(k); if (loaded) Module.buttonUnpress(k);
+}
+function finish(k, q) {
+  held.delete(k); if (loaded) Module.buttonUnpress(k);
+  if (!q.taps) { delete later[k]; return; }
+  setTimeout(() => { delete later[k]; press(k); if (!q.down) release(k); }, MIN_HOLD);
+}
 function bindButtons() {
   $$('[data-key]').forEach(b => {
     const k = b.dataset.key;
@@ -378,10 +398,17 @@ function bindButtons() {
   // keyboard (desktop / iPad keyboard)
   const KEYS = { ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right', z: 'A', x: 'B', a: 'L', s: 'R', Enter: 'Start', Backspace: 'Select' };
   const typing = e => !!(e.target && e.target.closest && e.target.closest('input, textarea, select, [contenteditable]'));
-addEventListener('keydown', e => { if (typing(e) || e.metaKey || e.ctrlKey || e.altKey) return; if (e.key === 'p' || e.key === 'P') { e.preventDefault(); if (!e.repeat) togglePause(); return; } const k = KEYS[e.key] || KEYS[e.key.toLowerCase()]; if (k) { e.preventDefault(); press(k); } if (e.key === ' ') { e.preventDefault(); toggleFF(); } });
-  addEventListener('keyup', e => { const k = KEYS[e.key] || KEYS[e.key.toLowerCase()]; if (k) release(k); });
+  const keyDown = e => { if (typing(e) || e.metaKey || e.ctrlKey || e.altKey) return; if (e.key === 'p' || e.key === 'P') { e.preventDefault(); if (!e.repeat) togglePause(); return; } const k = KEYS[e.key] || KEYS[e.key.toLowerCase()]; if (k) { e.preventDefault(); press(k); } if (e.key === ' ') { e.preventDefault(); if (!e.repeat) toggleFF(); } };
+  // a Mac sends no keyup for a key let go while ⌘ is down, which left it held (and every later press of it ignored)
+  const keyUp = e => { if (e.key === 'Meta') { [...held.keys()].forEach(release); return; } const k = KEYS[e.key] || KEYS[e.key.toLowerCase()]; if (k) release(k); };
+  const releaseAll = () => [...held.keys()].forEach(release);
+  addEventListener('keydown', keyDown); addEventListener('keyup', keyUp);
   // never leave a button stuck down when the page loses focus
-  addEventListener('blur', () => [...held].forEach(release));
+  addEventListener('blur', releaseAll);
+  // after a click in the overlay (side by side on a Mac) the keys go to its frame: listen there too
+  const frame = $('#ov');
+  const hookFrame = () => { try { const w = frame.contentWindow; w.addEventListener('keydown', keyDown); w.addEventListener('keyup', keyUp); w.addEventListener('blur', releaseAll); } catch (err) { /* not ready */ } };
+  frame.addEventListener('load', hookFrame); hookFrame();
 }
 /* ---------- game controller (Bluetooth / MFi: Xbox, PlayStation, Switch Pro...) ----------
    Standard mapping: A/Cross = A, B/Circle = B (swap in the menu), LB/L1 = L, RB/R1 = R, Start/Options = Start,
