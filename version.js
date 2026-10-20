@@ -1,1 +1,1 @@
-window.APP_VERSION = {"n":37,"date":"2026-10-20","hash":"5b129b36ff7d"};
+window.APP_VERSION = {"n":38,"date":"2026-10-20","hash":"adcccf2f3cd7"};

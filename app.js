@@ -349,29 +349,42 @@ function setView(v) {
 }
 
 /* ---------- controls ---------- */
-/* The game reads the buttons once a frame, so a press shorter than a frame (a trackpad tap-to-click, a quick key tap)
-   could come and go unseen. Every press is held for at least MIN_HOLD ms; a tap made while the last one is still being
-   held is queued and pressed again right after it, so quick double taps count twice. */
-const MIN_HOLD = 50;
-const held = new Map(), later = {}; // key -> when it went down; key -> queued tap while a release is held back
-function press(k) {
+/* The game reads the buttons once a frame, and the emulator runs in bursts, so a press that is only down for a moment
+   (a quick key tap, a trackpad tap-to-click) can come and go before the game looks. Each change is kept until the game's
+   own frame counter has moved 2 frames (so its button read has seen it), or 40 ms on the title screen where there is
+   no counter yet. Taps made faster than that are queued, but never more than one ahead, so nothing replays late. */
+const keyState = {}; // key -> { on: what the game is being shown, queue: changes waiting their turn, at, f }
+const frameNow = () => { try { return read ? frameCount(read) : null; } catch (e) { return null; } };
+function settled(s) {
+  const dt = performance.now() - s.at, f = frameNow();
+  if (f == null || s.f == null) return dt >= 40;
+  return ((f - s.f) >>> 0) >= 2 || dt >= 250; // 250 ms: paused, or the counter isn't ticking
+}
+let pumpTimer = 0;
+function pump() {
+  pumpTimer = 0;
   if (!loaded) return;
-  if (later[k]) { later[k].taps++; later[k].down = true; return; }
-  if (held.has(k)) return;
-  held.set(k, performance.now()); Module.buttonPress(k);
+  let waiting = false;
+  for (const k in keyState) {
+    const s = keyState[k];
+    if (!s.queue.length) continue;
+    if (!settled(s)) { waiting = true; continue; }
+    s.on = s.queue.shift(); s.at = performance.now(); s.f = frameNow();
+    if (s.on) Module.buttonPress(k); else Module.buttonUnpress(k);
+    if (s.queue.length) waiting = true;
+  }
+  if (waiting) pumpTimer = setTimeout(pump, 4);
 }
-function release(k) {
-  if (later[k]) { later[k].down = false; return; }
-  if (!held.has(k)) return;
-  const wait = MIN_HOLD - (performance.now() - held.get(k));
-  if (wait > 0) { const q = later[k] = { taps: 0, down: false }; setTimeout(() => finish(k, q), wait); return; }
-  held.delete(k); if (loaded) Module.buttonUnpress(k);
+function setKey(k, v) {
+  if (!loaded) return;
+  const s = keyState[k] || (keyState[k] = { on: false, queue: [], at: 0, f: null });
+  const last = s.queue.length ? s.queue[s.queue.length - 1] : s.on;
+  if (v === last) return;
+  if (s.queue.length >= 3) s.queue.pop(); // already a tap behind: fold this one into it
+  else s.queue.push(v);
+  if (!pumpTimer) pump();
 }
-function finish(k, q) {
-  held.delete(k); if (loaded) Module.buttonUnpress(k);
-  if (!q.taps) { delete later[k]; return; }
-  setTimeout(() => { delete later[k]; press(k); if (!q.down) release(k); }, MIN_HOLD);
-}
+const press = k => setKey(k, true), release = k => setKey(k, false);
 function bindButtons() {
   $$('[data-key]').forEach(b => {
     const k = b.dataset.key;
@@ -400,8 +413,8 @@ function bindButtons() {
   const typing = e => !!(e.target && e.target.closest && e.target.closest('input, textarea, select, [contenteditable]'));
   const keyDown = e => { if (typing(e) || e.metaKey || e.ctrlKey || e.altKey) return; if (e.key === 'p' || e.key === 'P') { e.preventDefault(); if (!e.repeat) togglePause(); return; } const k = KEYS[e.key] || KEYS[e.key.toLowerCase()]; if (k) { e.preventDefault(); press(k); } if (e.key === ' ') { e.preventDefault(); if (!e.repeat) toggleFF(); } };
   // a Mac sends no keyup for a key let go while ⌘ is down, which left it held (and every later press of it ignored)
-  const keyUp = e => { if (e.key === 'Meta') { [...held.keys()].forEach(release); return; } const k = KEYS[e.key] || KEYS[e.key.toLowerCase()]; if (k) release(k); };
-  const releaseAll = () => [...held.keys()].forEach(release);
+  const keyUp = e => { if (e.key === 'Meta') { releaseAll(); return; } const k = KEYS[e.key] || KEYS[e.key.toLowerCase()]; if (k) release(k); };
+  const releaseAll = () => Object.keys(keyState).forEach(release);
   addEventListener('keydown', keyDown); addEventListener('keyup', keyUp);
   // never leave a button stuck down when the page loses focus
   addEventListener('blur', releaseAll);
