@@ -378,7 +378,7 @@ function bindButtons() {
   // keyboard (desktop / iPad keyboard)
   const KEYS = { ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right', z: 'A', x: 'B', a: 'L', s: 'R', Enter: 'Start', Backspace: 'Select' };
   const typing = e => !!(e.target && e.target.closest && e.target.closest('input, textarea, select, [contenteditable]'));
-addEventListener('keydown', e => { if (typing(e)) return; const k = KEYS[e.key] || KEYS[e.key.toLowerCase()]; if (k) { e.preventDefault(); press(k); } if (e.key === ' ') { e.preventDefault(); toggleFF(); } });
+addEventListener('keydown', e => { if (typing(e) || e.metaKey || e.ctrlKey || e.altKey) return; if (e.key === 'p' || e.key === 'P') { e.preventDefault(); if (!e.repeat) togglePause(); return; } const k = KEYS[e.key] || KEYS[e.key.toLowerCase()]; if (k) { e.preventDefault(); press(k); } if (e.key === ' ') { e.preventDefault(); toggleFF(); } });
   addEventListener('keyup', e => { const k = KEYS[e.key] || KEYS[e.key.toLowerCase()]; if (k) release(k); });
   // never leave a button stuck down when the page loses focus
   addEventListener('blur', () => [...held].forEach(release));
@@ -491,7 +491,10 @@ function openMenu() { $('#menu').hidden = false; renderSlots(); undoNote(); rend
 // colour themes (overlay/themes.js); the overlay inside the app follows along
 function renderThemes() { const el = $('#themePick'); if (!el || !window.RRTheme) return; el.innerHTML = window.RRTheme.pickerHTML(); window.RRTheme.bind(el, renderThemes); }
 function closeMenu() { $('#menu').hidden = true; }
-const landscape = () => matchMedia('(orientation: landscape) and (max-height: 600px)').matches;
+// the game and the overlay side by side: a phone held sideways, or a Mac / desktop window (see app.css)
+const DESKTOP_MQ = '(hover: hover) and (pointer: fine) and (min-width: 900px)';
+const desktop = () => matchMedia(DESKTOP_MQ).matches;
+const landscape = () => desktop() || matchMedia('(orientation: landscape) and (max-height: 600px)').matches;
 function applyPrefs() {
   if (window.APP_VERSION && $('#verTag')) $('#verTag').textContent = 'version ' + window.APP_VERSION.n + ' · ' + window.APP_VERSION.date;
   if ($('#autoMins')) $('#autoMins').value = String(pref.autoMins == null ? 3 : pref.autoMins);
@@ -569,6 +572,11 @@ $('#pauseBtn').onclick = togglePause;
 // switching orientation: in landscape both panes are visible, so start playing again
 matchMedia('(orientation: landscape) and (max-height: 600px)').addEventListener('change', e => { if (e.matches) { $('#pad').hidden = false; $('#overlay').hidden = false; } else setView(view); });
 if (landscape()) { $('#pad').hidden = false; $('#overlay').hidden = false; }
+// on a Mac the welcome sheet talks about this computer, not a phone
+if (desktop()) {
+  $('#welcome h2').textContent = 'Radical Red on your Mac';
+  $('#welcome p').textContent = 'Pick your Radical Red ROM (.gba). It stays in this browser and is never uploaded.';
+}
 $('#ffSpeed').onchange = e => { pref.ff = +e.target.value; savePref(); if (ffOn && loaded) Module.setFastForwardMultiplier(pref.ff); };
 $('#vol').oninput = e => { pref.vol = +e.target.value; savePref(); if (Module) Module.setVolume(pref.vol); };
 $$('#switch button').forEach(b => b.onclick = () => setView(b.dataset.view));

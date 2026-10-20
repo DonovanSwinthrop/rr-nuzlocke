@@ -8,9 +8,11 @@ const pct = n => (Math.round(n * 10) / 10).toFixed(1) + '%';
 const tc = s => String(s).toLowerCase().replace(/(^|[\s(&.\-/])([a-z])/g, (m, a, b) => a + b.toUpperCase());
 
 /* ---------- preferences (this PC only) ---------- */
+// Each game keeps its own (Radical Red's keys as they were; Unbound's get '-unbound'): stars, routes marked used, mode...
+const GKEY = k => (window.RR_GAME && window.RR_GAME !== 'rr' ? k + '-' + window.RR_GAME : k);
 const PREF = { ai: false, autoBattle: true, time: 'auto', intim: true };
-try { Object.assign(PREF, JSON.parse(localStorage.getItem('rro-prefs') || '{}')); } catch (e) { /* defaults */ }
-const savePrefs = () => { try { localStorage.setItem('rro-prefs', JSON.stringify(PREF)); } catch (e) { /* ignore */ } };
+try { Object.assign(PREF, JSON.parse(localStorage.getItem(GKEY('rro-prefs')) || '{}')); } catch (e) { /* defaults */ }
+const savePrefs = () => { try { localStorage.setItem(GKEY('rro-prefs'), JSON.stringify(PREF)); } catch (e) { /* ignore */ } };
 
 /* ---------- lookups ---------- */
 const NAME_TO_ID = {}; Object.entries(T.species).forEach(([id, n]) => { if (!(n in NAME_TO_ID)) NAME_TO_ID[n] = +id; });
@@ -73,31 +75,90 @@ function decodeBattlers(hex) {
   }
   return out;
 }
+/* Decoded games (Emerald Imperium, SoulGold: another engine). The app sends PokeDaisy's own decoding (state.dec):
+   numbers the pack's tables (T) name; PokeDaisy's names when the pack has none. Stats come as hp, atk, def, spe,
+   spa, spd; battle stats atk, def, spe, spa, spd; stages atk..evasion (-6..+6). */
+const STAT6 = k => (k && k.length >= 6 ? { hp: k[0], atk: k[1], def: k[2], spe: k[3], spa: k[4], spd: k[5] } : null);
+const STATUS_BITS = { SLP: 1, PSN: 8, BRN: 0x10, FRZ: 0x20, PAR: 0x40, TOX: 0x80 };
+function decMon(m) {
+  if (!m || m.egg || !m.sp) return null;
+  const species = T.species[m.sp] || m.name, ab = (T.specAb && T.specAb[m.sp]) || [];
+  return {
+    pid: m.pid, speciesId: m.sp, species, baseName: T.species[T.anc && T.anc[m.sp]] || species, nick: m.name,
+    item: T.items[m.item] || m.itemName || '', level: m.lv, nature: (m.nat != null && T.natures[m.nat]) || 'Hardy',
+    ability: T.abilities[m.ab] || m.abName || T.abilities[ab[0]] || '',
+    moves: (m.moves || []).map(x => T.moves[x.id] || x.name).filter(Boolean),
+    evs: STAT6(m.evs) || {}, ivs: STAT6(m.ivs) || { hp: 31, atk: 31, def: 31, spa: 31, spd: 31, spe: 31 },
+    metLoc: m.met || 0, metLevel: m.metLv || 0, hp: m.hp, maxHP: m.maxHP, exactLevel: true
+  };
+}
+const decList = list => (list || []).map((m, i) => { const x = decMon(m); if (x) x.slot = i; return x; }).filter(Boolean);
+// No trainer id in a decoded battle: the boss is the one whose team this is (every species of theirs, same count).
+function bossByTeam(enemy) {
+  if (!enemy.length) return undefined;
+  const want = enemy.map(m => family(m.species)).sort().join('|');
+  const hit = BOSS.find(b => b.mons.filter(m => !m.pool).map(m => family(m.s)).sort().join('|') === want);
+  return hit ? hit.i : undefined;
+}
+function decBattler(m, i) {
+  const x = decMon(m); if (!x) return null;
+  const b = m.bstats || [], st = m.stages || [];
+  return Object.assign(x, {
+    i, stages: [0].concat(st.slice(0, 7)).concat([0, 0, 0, 0, 0, 0, 0]).slice(0, 8),
+    status1: STATUS_BITS[m.status] || 0, status2: 0, spe: b[2] || 0,
+    stats: b.length >= 5 ? { atk: b[0], def: b[1], spe: b[2], spa: b[3], spd: b[4] } : undefined
+  });
+}
 const statusOf = s => (s & 7) ? 'slp' : (s & 0x80) ? 'tox' : (s & 8) ? 'psn' : (s & 0x10) ? 'brn' : (s & 0x20) ? 'frz' : (s & 0x40) ? 'par' : '';
 
 /* ---------- live state ---------- */
 let ST = null, PC = [], DEAD = [], CONN = false, PARTY = [], tab = 'route', mode = 'bar', focused = false;
 let viewEnemy = null, swView = null, nextMon = null, nextFor = null, timeSel = null, lastPanelKey = '', lastBarKey = '';
 function flagSet(f) { if (!ST || !ST.flags) return false; const i = f >> 3; return i * 2 + 2 <= ST.flags.length && (parseInt(ST.flags.substr(i * 2, 2), 16) >> (f & 7)) & 1; }
-function trainerBeaten(bi) { const id = TR.bossIds[bi]; return (Array.isArray(id) ? id : [id]).some(x => x != null && x < 0x400 && flagSet(0x500 + x)); }
+// a trainer's beaten flag is 0x500 + its id (FireRed's and Emerald's TRAINER_FLAGS_START; the expansion's more trainers
+// run past FireRed's 0x400, so decoded games send flags up to 0xFFF)
+// DS packs: the GBA rule (0x500 + id) means nothing there. Gen 4 sets trainer flag 1360 + id, but only for ordinary trainers
+// (scripted bosses never set one, so they stay unbeaten unless doneFlags maps them); Black / Blaze Black's aren't mapped yet.
+const DS_TRAINER_FLAGS = { pt: 1360, rp: 1360, hgss: 1360, b1: null, bbk: null, b2: null, bb2r: null };
+// a DS game's event variable (u16, variable 0x4000 first, little-endian hex in ST.vars), 0 when not sent
+function varAt(v) { if (!ST || !ST.vars) return 0; const i = (v - 0x4000) * 4; return i < 0 || i + 4 > ST.vars.length ? 0 : parseInt(ST.vars.substr(i + 2, 2) + ST.vars.substr(i, 2), 16); }
+// doneAny (Gen 4 story bosses): beaten when any of its event flags is set or event variables has reached its value
+function trainerBeaten(bi) { if (TR.doneAny && TR.doneAny[bi]) return TR.doneAny[bi].some(c => c.flag != null ? flagSet(c.flag) : varAt(c.var) >= c.min);
+  if (TR.doneFlags && TR.doneFlags[bi] != null) return flagSet(TR.doneFlags[bi]); const id = TR.bossIds[bi];
+  if (window.RR_GAME in DS_TRAINER_FLAGS) { const base = DS_TRAINER_FLAGS[window.RR_GAME]; return base != null && (Array.isArray(id) ? id : [id]).some(x => x != null && flagSet(base + x)); }
+  return (Array.isArray(id) ? id : [id]).some(x => x != null && x < (ST && ST.dec ? 0xB00 : 0x400) && flagSet(0x500 + x)); }
 const orderBeaten = o => o.b.some(trainerBeaten);
 function nextOrder() { return ST && ST.flags ? D.order.find(o => !o.opt && !orderBeaten(o)) || null : null; }
+/* Mode (PREF.mode): 'nuzlocke' (default) or 'play' for a normal playthrough, which drops the nuzlocke bookkeeping:
+   encounters left, used / open routes, dupes, and boxes 20-25 as a graveyard (they're just more boxes then). */
+const nuz = () => PREF.mode !== 'play';
 function owned() { return PARTY.concat(PC, DEAD); } // includes the dead, for used routes and dupes
-function alive() { return PARTY.concat(PC); }
+function alive() { return nuz() ? PARTY.concat(PC) : PARTY.concat(PC, DEAD); }
 function starterTypes() { const s = owned().find(m => window.RRSave.STARTER_BASES.includes(m.baseName) && m.metLevel === 5); return s ? types(s.species) : []; }
 function pickB(o) {
   if (o.b.length < 2) return o.b[0];
   const t = starterTypes(); const has = t.includes('Water') ? 'BULBASAUR' : t.includes('Fire') ? 'SQUIRTLE' : t.includes('Grass') ? 'CHARMANDER' : '';
   const beatenV = o.b.find(trainerBeaten); if (beatenV != null) return beatenV;
   const hit = has && o.b.find(i => BOSS[i].notes.some(n => n.toUpperCase().includes('RIVAL HAS ' + has)));
-  return hit != null && hit !== false ? hit : o.b[0];
+  const fams = new Set(owned().map(m => family(m.species).toUpperCase()));
+  const mine = o.b.find(i => BOSS[i].notes.some(n => { const c = /PLAYER CHOSE (\S+)/.exec(n.toUpperCase()); return c && fams.has(c[1]); }));
+  if (mine != null) return mine;
+  // Emerald Imperium names the starter's type ("STARTER WATER"): the type of the starter family you own
+  const st = owned().find(m => window.RRSave.STARTER_BASES.includes(m.baseName));
+  const stType = st ? (types(st.baseName)[0] || '').toUpperCase() : '';
+  const byType = stType && o.b.find(i => BOSS[i].notes.includes('STARTER ' + stType));
+  if (typeof byType === 'number') return byType; // '' when no starter is owned
+  // `has && ...` is '' when no starter is known (a finished save that traded it away): that isn't a boss index
+  return typeof hit === 'number' ? hit : o.b[0];
 }
+// a Lv 100 Pokemon against a Lv 12 boss reads thousands of percent: show it as 999+
+const pcap = x => { const r = Math.round(x); return r > 999 ? '999+' : r; };
 const topLevel = () => Math.max(1, ...PARTY.map(m => m.level));
 function bossLevel(b, m) { return m.lv != null ? m.lv : Math.max(1, Math.min(100, (b.sheet === 'Postgame' ? 100 : topLevel()) + (m.rel || 0))); }
 /* The guide lists a two-trainer double battle (like the S.S. Anne pairs) as one team, which can put the Pokémon in the wrong order.
    The first time you fight a boss, the real party order (and which trainer owns which Pokémon) is read from the game and remembered. */
 let BOSS_SEEN = {};
-try { BOSS_SEEN = JSON.parse(localStorage.getItem('rro-boss-order') || '{}'); } catch (e) { /* none yet */ }
+try { BOSS_SEEN = JSON.parse(localStorage.getItem(GKEY('rro-boss-order')) || '{}'); } catch (e) { /* none yet */ }
 const normSp = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 function learnOrder(bIdx, party, twoOpp) {
   if (bIdx == null || !party.length) return;
@@ -106,7 +167,7 @@ function learnOrder(bIdx, party, twoOpp) {
   if (old && JSON.stringify(old) === JSON.stringify(rec)) return;
   if (old && old.o.length > rec.o.length) return; // keep the fuller record
   BOSS_SEEN[bIdx] = rec;
-  try { localStorage.setItem('rro-boss-order', JSON.stringify(BOSS_SEEN)); } catch (e) { /* ignore */ }
+  try { localStorage.setItem(GKEY('rro-boss-order'), JSON.stringify(BOSS_SEEN)); } catch (e) { /* ignore */ }
 }
 // The boss's Pokémon in real party order when it has been seen, each with its party slot (slots 4-6 = the second trainer).
 function bossMons(bIdx) {
@@ -286,19 +347,19 @@ function critTag(a, d, n, fl) {
 const speedWord = (a, b, tr) => a === b ? 'speed tie' : ((a > b) !== !!tr) ? 'you move first' : 'they move first';
 function battleInfo() {
   if (!ST || !ST.inBattle || !ST.battleMons) return null;
-  const bats = decodeBattlers(ST.battleMons);
-  const enemyParty = decodeParty(ST.enemy, 6);
+  const bats = ST.dec ? (ST.battlersDec || []).map((m, i) => (m ? decBattler(m, i) : null)) : decodeBattlers(ST.battleMons);
+  const enemyParty = ST.dec ? decList(ST.enemyDec) : decodeParty(ST.enemy, 6);
   const idx0 = ST.partyIdx ? [0, 1, 2, 3].map(i => parseInt(ST.partyIdx.substr(i * 4 + 2, 2) + ST.partyIdx.substr(i * 4, 2), 16)) : [0, 0, 0, 0];
   // which party slot each battler is: the game reorders the party when you switch (doubles especially), so the battle's
   // own slot numbers can point at someone else; match by the Pokémon's personality value, the slot number as a fallback
   const idx = idx0.map((k, b) => { const bat = bats[b]; if (!bat || bat.pid == null) return k; const list = b % 2 ? enemyParty : PARTY; const m = list.find(x => x.pid === bat.pid); return m ? m.slot : k; });
   const doubles = (ST.battleType & 1) === 1;
-  const tId = ST.trainerA, bi = (ST.battleType & 8) ? ID_TO_BOSS[tId] : undefined;
+  const tId = ST.trainerA, bi = !(ST.battleType & 8) ? undefined : ST.dec ? bossByTeam(enemyParty) : ID_TO_BOSS[tId];
   const boss = bi != null ? BOSS[bi] : null;
   const ord = bi != null ? D.order.find(o => o.b.includes(bi)) : null;
   const fld = liveField(bossField(boss)); fld.doubles = doubles;
   if (bi != null && (ST.battleType & 8)) learnOrder(bi, enemyParty, !!(ST.battleType & 0x8000) && !!ST.trainerB);
-  const side = (b, list) => { const bat = bats[b]; if (!bat) return null; const m = list.find(x => x.slot === idx[b]) || list[0]; if (!m) return null; return { bat, m, p: mk(monCalcOpts(m, bat)) }; };
+  const side = (b, list) => { const bat = bats[b]; if (!bat) return null; const m = list.find(x => x.slot === idx[b]) || list[0] || (ST.dec ? bat : null); if (!m) return null; /* decoded wild battles: no foe party, the battler is the Pokémon */ return { bat, m, p: mk(monCalcOpts(m, bat)) }; };
   const mine = [side(0, PARTY), doubles ? side(2, PARTY) : null].filter(x => x && x.p);
   // in doubles the opponent's 'left' Pokémon (battler 1) stands on the right of the screen, so list battler 3 first to match what you see
   const foes = (doubles ? [side(3, enemyParty), side(1, enemyParty)] : [side(1, enemyParty)]).filter(x => x && x.p);
@@ -338,7 +399,7 @@ function renderBar() {
       const best = movesOf(me.p, me.m.moves).map(n => hit(me.p, foe.p, n, field(bi.fld, true))).filter(h => !h.status && !moveWarns(h.name, me.p, foe.p, { terrain: bi.fld.terrain }).some(w => w.lvl === 'bad')).sort((x, y) => y.hiP - x.hiP)[0];
       b = 'VS ' + bi.foes.map(x => `${x.bat.species} ${Math.round(x.bat.hp / x.bat.maxHP * 100)}%`).join(' & ');
       const sMe = speedOf(me.p, bi.fld, true), sFoe = speedOf(foe.p, bi.fld, false);
-      s = (best ? `${best.label} ${Math.round(best.loP)}–${Math.round(best.hiP)}%${best.hi >= foe.p.curHP() ? ' (KO)' : ''}` : '') + ` · ${speedWord(sMe, sFoe, bi.fld.tr)}${bi.fld.tr ? ' (Trick Room)' : ''}` + (bi.boss ? ` · ${tc(bi.ord ? bi.ord.name : bi.boss.name)}` : '');
+      s = (best ? `${best.label} ${pcap(best.loP)}–${pcap(best.hiP)}%${best.hi >= foe.p.curHP() ? ' (KO)' : ''}` : '') + ` · ${speedWord(sMe, sFoe, bi.fld.tr)}${bi.fld.tr ? ' (Trick Room)' : ''}` + (bi.boss ? ` · ${tc(bi.ord ? bi.ord.name : bi.boss.name)}` : '');
     } else { b = 'In battle'; s = ''; }
   } else if (ST) {
     const L = locNow(), nx = nextOrder();
@@ -346,8 +407,8 @@ function renderBar() {
     const l = L && D.locs.find(x => x.name === L.loc);
     const used = l && owned().find(m => window.RRSave.mapLoc(T, D, m).loc === l.name);
     const parts = [];
-    if (l) parts.push(used ? `Used: ${used.nick || used.species}` : l.adv && l.adv.k === 'skip' ? 'Guide: skip this one' : l.adv && l.adv.k === 'later' ? 'Guide: save for later' : l.pick ? `Go for ${l.pick.top.join(', ')}` : 'Encounter available');
-    const left = encLeft().open.length;
+    if (l) parts.push(used && nuz() ? `Used: ${used.nick || used.species}` : l.adv && l.adv.k === 'skip' ? 'Guide: skip this one' : l.adv && l.adv.k === 'later' ? 'Guide: save for later' : l.pick ? `Go for ${l.pick.top.join(', ')}` : 'Encounter available');
+    const left = nuz() ? encLeft().open.length : 0;
     if (left) parts.push(left + ' encounter' + (left > 1 ? 's' : '') + ' left');
     if (nx) parts.push(`Next: ${tc(nx.name)} (cap ${nx.cap})`);
     s = parts.join(' · ');
@@ -361,10 +422,12 @@ function renderBar() {
 /* ---------- render: panel tabs ---------- */
 /* ---------- Dex tab (Radical Red Pokédex data, as on the website) ---------- */
 let dexQ = '', dexType = '', dexSel = null, dexMoveTab = 'lv', dexLoading = false, ENC_INDEX = null, BOSS_INDEX = null;
+const RR = (window.RR_GAME || 'rr') === 'rr'; // Radical Red; other games come as packs (Unbound: ?game=unbound)
 function loadDex() {
-  if (window.RR_DEX || dexLoading) return;
+  const file = window.RR_DEX_FILE || (RR ? 'dex.js' : '');
+  if (window.RR_DEX || dexLoading || !file) return;
   dexLoading = true;
-  const sc = document.createElement('script'); sc.src = 'dex.js';
+  const sc = document.createElement('script'); sc.src = file;
   sc.onload = () => { dexLoading = false; if (window.RR_MOVES) window.RR_MOVES.patchDex(window.RR_DEX); abilDesc.map = null; lastPanelKey = ''; renderPanel(true); };
   sc.onerror = () => { dexLoading = false; };
   document.body.appendChild(sc);
@@ -424,7 +487,7 @@ function dexHTML() {
 function dexDetail(n) {
   const X = window.RR_DEX, s = X.species[n], sp = SPEC[n];
   const stats = [['HP', sp.bs.hp], ['Atk', sp.bs.at], ['Def', sp.bs.df], ['SpA', sp.bs.sa], ['SpD', sp.bs.sd], ['Spe', sp.bs.sp]];
-  const ab = s.ab.map((id, i) => id && X.abilities[id] ? `<li><b>${esc(X.abilities[id][0])}</b>${i === 2 ? ' <span class="tag">hidden</span>' : ''} <span class="muted">— ${esc(X.abilities[id][1])}</span></li>` : '').join('');
+  const ab = s.ab.map((id, i) => id && X.abilities[id] ? `<li><b>${esc(X.abilities[id][0])}</b>${i === 2 ? ' <span class="tag">hidden</span>' : ''} ${X.abilities[id][1] ? `<span class="muted">— ${esc(X.abilities[id][1])}</span>` : ''}</li>` : '').join('');
   const fam = [];
   const walk = (name, depth, how) => { const e = X.species[name]; if (!e || fam.some(f => f.name === name) || depth > 4) return; fam.push({ name, depth, how }); e.ev.forEach(([t, txt]) => walk(t, depth + 1, txt)); };
   walk(s.an, 0, '');
@@ -435,10 +498,13 @@ function dexDetail(n) {
   const own = owned().filter(m => m.species === n);
   // each move is a tappable row; tapping opens what it does (hover tooltips don't exist on a phone)
   const row = (id, lead) => { const m = X.moves[id]; if (!m) return ''; return `<tr class="mvrow" data-mvid="${id}"><td class="num muted">${lead}</td><td>${moveChip(m[0])}</td><td class="small">${esc(X.splits[m[5]] || '')}</td><td class="r num">${m[2] > 1 ? m[2] : '—'}</td><td class="r num">${m[3] || '—'}</td></tr><tr class="mvinfo" hidden><td colspan="5">${moveInfoHTML(m)}</td></tr>`; };
-  const tabs = { lv: ['Level', s.lv.length], tm: ['TM', s.tm.length], tu: ['Tutor', s.tu.length], em: ['Egg', s.em.length] };
+  let tabs = { lv: ['Level', s.lv.length], tm: ['TM', s.tm.length], tu: ['Tutor', s.tu.length], em: ['Egg', s.em.length] };
+  if (!X.tu.length) delete tabs.tu; // a pack's Dex without tutor data (Unbound: not located yet)
+  if (!(dexMoveTab in tabs)) dexMoveTab = 'lv';
   let rows = '';
   if (dexMoveTab === 'lv') rows = s.lv.slice().sort((a, b) => a[1] - b[1]).map(([id, lv]) => row(id, lv === 0 ? 'Evo' : lv)).join('');
-  if (dexMoveTab === 'tm') rows = s.tm.map(i => row(X.tm[i], 'TM' + String(i + 1).padStart(2, '0'))).join('');
+  const tmLabel = i => X.hmFrom != null && i >= X.hmFrom ? 'HM' + String(i - X.hmFrom + 1).padStart(2, '0') : 'TM' + String(i + 1).padStart(2, '0');
+  if (dexMoveTab === 'tm') rows = s.tm.map(i => row(X.tm[i], tmLabel(i))).join('');
   if (dexMoveTab === 'tu') rows = s.tu.map(i => row(X.tu[i], '')).join('');
   if (dexMoveTab === 'em') rows = s.em.map(id => row(id, '')).join('');
   const total = stats.reduce((a, x) => a + x[1], 0);
@@ -545,6 +611,7 @@ function splitSec() {
   if (!nx) return I.sections.length;
   // the furthest walkthrough area of any required fight up to the next one (Giovanni's gym is in early Viridian, but late)
   const ks = D.order.filter(o => o.n <= nx.n).map(o => window.RRBuild.sectionOf(o.loc)).filter(k => k < 999);
+  if (!RR && !ks.length) return null; // a pack whose fights carry no area (Unbound): no "by now", the tab is a search
   return ks.length ? Math.max(...ks) : 999;
 }
 // Can you get it now? At or before your next fight's area, not post-game, and the fight that gives it (a gym TM, a trainer's reward) is beaten.
@@ -650,7 +717,7 @@ function steerHTML(bi) {
     } else {
       const first = res.log.find(e => e.t === 'stay' || e.t === 'switch' || e.t === 'pivot' || e.t === 'in' || e.t === 'lead');
       const fightEv = res.log.find(e => e.t === 'fight');
-      now = !first ? '' : first.t === 'switch' ? `Switch to <b>${esc(mine[first.k].name)}</b>${first.move ? ` (it takes ${esc(first.move)}, up to ${Math.round(first.dmg)}%)` : ''}.`
+      now = !first ? '' : first.t === 'switch' ? `Switch to <b>${esc(mine[first.k].name)}</b>${first.move ? ` (it takes ${esc(first.move)}, up to ${pcap(first.dmg)}%)` : ''}.`
         : first.t === 'pivot' ? `Use <b>${esc(first.move)}</b> and bring in <b>${esc(mine[first.k].name)}</b>${first.first ? (first.fm ? ` (it takes ${esc(first.fm)} on the way in)` : '') : ' (your Pokémon takes their hit first, the one coming in is safe this turn)'}.`
         : `Stay in with <b>${esc(mine[first.i].name)}</b>${fightEv && fightEv.i === first.i && fightEv.mm ? ` and use <b>${esc(fightEv.mm)}</b>` : ''}.`;
       sees = fightEv ? (fightEv.aiKill === 'fast' ? `<b class="badtxt">${esc(foes[fightEv.j].name)} sees a fast kill</b> on ${esc(mine[fightEv.i].name)} (${esc(fightEv.fm)}).` : fightEv.aiKill === 'slow' ? `<b class="warntxt">${esc(foes[fightEv.j].name)} sees a slow kill</b> on ${esc(mine[fightEv.i].name)} (${esc(fightEv.fm)}).` : `${esc(foes[fightEv.j].name)} sees no kill on ${esc(mine[fightEv.i].name)}; it uses ${esc(fightEv.fm || 'nothing that hurts')}.`) : '';
@@ -700,6 +767,16 @@ function linesHTML() {
 
 function renderPanel(force) {
   if (mode !== 'panel') return;
+  // In the app, the first time the tab opens it asks how you're playing; the pick stays until changed in its settings.
+  if (window.rr.android && !PREF.mode) {
+    const el = $('#panel');
+    el.innerHTML = `<div class="card"><h2>How are you playing this run?</h2><p class="small muted">You can change it any time in this tab's settings (the gear).</p>
+      <p><button class="back" data-mode="nuzlocke" style="width:100%;padding:12px;font-size:15px"><b>Nuzlocke</b><br><span class="small muted">Tracks routes used, encounters left, dupes and the graveyard (boxes 20 to 25)</span></button></p>
+      <p><button class="back" data-mode="play" style="width:100%;padding:12px;font-size:15px"><b>Playthrough</b><br><span class="small muted">Everything else, without the nuzlocke bookkeeping</span></button></p></div>` + diffCardHTML();
+    bindDiff(el);
+    $$('[data-mode]', el).forEach(btn => btn.onclick = () => { PREF.mode = btn.dataset.mode; savePrefs(); tellMode(); capCache.key = ''; lastPanelKey = ''; lastBarKey = ''; renderBar(); renderPanel(true); });
+    return;
+  }
   $$('#tabs button').forEach(x => x.classList.toggle('on', x.dataset.tab === tab));
   $('#tabs [data-tab="battle"]').classList.toggle('flash', !!(ST && ST.inBattle) && tab !== 'battle');
   let key = tab + '|' + CONN + '|' + PREF.ai + '|' + timeSel + '|' + viewEnemy + '|' + swView;
@@ -717,7 +794,7 @@ function renderPanel(force) {
   if (!force && key === lastPanelKey) return;
   lastPanelKey = key;
   const el = $('#panel'), top = el.scrollTop;
-  el.innerHTML = !CONN && tab !== 'opts' && tab !== 'dex' && tab !== 'items' ? (window.rr.embedded ? '<div class="empty">Waiting for the game. Load your ROM and continue your save; the overlay links up once you are in the game.</div>' : window.rr.web ? '<div class="empty">Not connected to the game. In RetroArch turn on <b>Settings → Network → Network Commands</b>, load Radical Red, and keep <b>thor/bridge.js</b> running.</div>' : scriptHelpHTML())
+  el.innerHTML = !CONN && tab !== 'opts' && tab !== 'dex' && tab !== 'items' ? (window.rr.embedded || window.rr.android ? '<div class="empty">Waiting for the game. Continue your save; the overlay links up once you are in the game.</div>' : window.rr.web ? '<div class="empty">Not connected to the game. In RetroArch turn on <b>Settings → Network → Network Commands</b>, load Radical Red, and keep <b>thor/bridge.js</b> running.</div>' : scriptHelpHTML())
     : ({ route: routeHTML, battle: battleHTML, next: nextHTML, team: teamHTML, dex: dexHTML, lines: linesHTML, items: itemsHTML, opts: optsHTML })[tab]();
   el.scrollTop = top;
   bindPanel(el);
@@ -796,7 +873,7 @@ function encLeftHTML() {
 function routeHTML() {
   const L = locNow();
   if (!L) return '<div class="empty">Reading the game…</div>';
-  return encLeftHTML() + routeHTML0(L);
+  return (nuz() ? encLeftHTML() : '') + routeHTML0(L);
 }
 function routeHTML0(L) {
   const l = D.locs.find(x => x.name === L.loc);
@@ -809,24 +886,25 @@ function routeHTML0(L) {
   const mine = fl ? all.filter(g => fl.keep(g.a, g.t)) : all;
   const groups = fl && !allFloors && mine.length ? mine : all;
   const floorBar = fl && mine.length ? `<p class="small">${allFloors ? `Showing every floor. <button class="mini" id="floorOnly">only ${esc(fl.name)}</button>` : `You're on <b>${esc(fl.name)}</b>: showing only this floor. <button class="mini" id="floorAll">all floors</button>`}</p>` : '';
-  if (!groups.length) return `<div class="card"><div class="row between"><h2>${esc(l.name)}</h2>${used.length ? '<span class="tag good">used</span>' : '<span class="tag top">open</span>'}</div>
-    ${used.length ? '' : advOv(l)}
-    ${used.length ? `<p>Your encounter here: ${used.map(m => spr(m.species, 24) + ' <b>' + esc(m.nick || m.species) + '</b>').join(', ')}</p>` : ''}
+  const N = nuz();
+  if (!groups.length) return `<div class="card"><div class="row between"><h2>${esc(l.name)}</h2>${!N ? '' : used.length ? '<span class="tag good">used</span>' : '<span class="tag top">open</span>'}</div>
+    ${used.length && N ? '' : advOv(l)}
+    ${used.length && N ? `<p>Your encounter here: ${used.map(m => spr(m.species, 24) + ' <b>' + esc(m.nick || m.species) + '</b>').join(', ')}</p>` : ''}
     <p class="muted">No wild table here. ${esc(l.note || 'This encounter is a gift, egg or static Pokémon.')}${l.pick ? ' Go for <b>' + l.pick.top.map(esc).join(', ') + '</b>.' : ''}</p></div>`;
   const hr = window.__gameHour != null ? window.__gameHour : new Date().getHours(), autoTime = hr >= 20 || hr < 4 ? 'Night' : 'Day';
   const methods = [...new Set(groups.map(g => /Night/i.test(g.t.m) ? 'Night' : /Day/i.test(g.t.m) ? 'Day' : g.t.m || g.t.k))];
   const sel = timeSel && methods.includes(timeSel) ? timeSel : methods.includes(autoTime) ? autoTime : methods[0];
   const shown = groups.filter(g => (/Night/i.test(g.t.m) ? 'Night' : /Day/i.test(g.t.m) ? 'Day' : g.t.m || g.t.k) === sel);
   return `<div class="card">
-    <div class="row between"><h2>${esc(l.name)}</h2>${used.length ? '<span class="tag good">used</span>' : '<span class="tag top">open</span>'}</div>
-    ${used.length ? '' : advOv(l)}
-    ${used.length ? `<p>Your encounter here: ${used.map(m => spr(m.species, 24) + ' <b>' + esc(m.nick || m.species) + '</b>').join(', ')}</p>` : ((PREF.failed || []).includes(l.name) ? '<p class="small">Marked used (it got away). <button class="mini" data-fail="' + esc(l.name) + '">undo</button></p>' : '<p class="muted small">No Pokémon from here in your party, PC or dead boxes. Ran away or fainted before you caught it? <button class="mini" data-fail="' + esc(l.name) + '">mark used</button></p>')}
+    <div class="row between"><h2>${esc(l.name)}</h2>${!N ? '' : used.length ? '<span class="tag good">used</span>' : '<span class="tag top">open</span>'}</div>
+    ${used.length && N ? '' : advOv(l)}
+    ${!N ? '' : used.length ? `<p>Your encounter here: ${used.map(m => spr(m.species, 24) + ' <b>' + esc(m.nick || m.species) + '</b>').join(', ')}</p>` : ((PREF.failed || []).includes(l.name) ? '<p class="small">Marked used (it got away). <button class="mini" data-fail="' + esc(l.name) + '">undo</button></p>' : '<p class="muted small">No Pokémon from here in your party, PC or dead boxes. Ran away or fainted before you caught it? <button class="mini" data-fail="' + esc(l.name) + '">mark used</button></p>')}
     ${l.pick ? `<p>Go for <b>${l.pick.top.map(esc).join(', ')}</b>${l.pick.when ? ' <span class="muted">· ' + esc(l.pick.when) + '</span>' : ''}</p>${l.pick.good.length ? `<p class="small muted">Also good: ${l.pick.good.map(esc).join(', ')}</p>` : ''}` : ''}
     ${floorBar}
   </div>
   ${methods.length > 1 ? `<div class="seg">${methods.map(m => `<button data-time="${esc(m)}" class="${m === sel ? 'on' : ''}">${esc(m)}</button>`).join('')}</div>` : ''}
   ${shown.map(g => `<h3>${esc(g.a)}${g.t.m && !/^(Day|Night)$/.test(g.t.m) ? ' · ' + esc(g.t.m) : ''}</h3>
-    <table><tbody>${merge(g.t.mons).map(x => `<tr class="${top.has(x[0]) ? 'hl' : ''}"><td>${spr(x[0], 26)}</td><td>${esc(x[0])}${top.has(x[0]) ? '<span class="tag top">pick</span>' : good.has(x[0]) ? '<span class="tag good">good</span>' : avoid.has(x[0]) ? '<span class="tag avoid">skip</span>' : ''}${fams.has(family(x[0])) ? '<span class="tag own">dupe</span>' : ''}</td><td class="r num">${x[1]}%</td><td class="r num muted">${esc(x[2])}</td></tr>`).join('')}</tbody></table>`).join('') || '<p class="muted">No table for this time of day.</p>'}`;
+    <table><tbody>${merge(g.t.mons).map(x => `<tr class="${top.has(x[0]) ? 'hl' : ''}"><td>${spr(x[0], 26)}</td><td>${esc(x[0])}${top.has(x[0]) ? '<span class="tag top">pick</span>' : good.has(x[0]) ? '<span class="tag good">good</span>' : avoid.has(x[0]) ? '<span class="tag avoid">skip</span>' : ''}${N && fams.has(family(x[0])) ? '<span class="tag own">dupe</span>' : ''}</td><td class="r num">${x[1]}%</td><td class="r num muted">${esc(x[2])}</td></tr>`).join('')}</tbody></table>`).join('') || '<p class="muted">No table for this time of day.</p>'}`;
 }
 // Double battles: every attacker against every target on the field, turn order, and the AI's likely picks.
 /* "If both attack it": for each of your Pokémon on the field, their two strongest hits into it added up (high rolls).
@@ -908,7 +986,7 @@ function switchFor(bi) {
   const p = act ? act.p : mk(monCalcOpts(t));
   return p ? switchTableHTML({ name: t.species, p, moves: t.moves }, partySwitchList(bi), bi.fld) : '';
 }
-let battleView = 'live', bossSel = null, bossMonSel = null, bossAtCap = true;
+let battleView = 'live', bossSel = null, bossMonSel = null, bossAtCap = (window.RR_GAME || 'rr') === 'rr';
 const bossLineShown = new Set();
 function battleHTML() {
   const inB = !!(ST && ST.inBattle);
@@ -970,7 +1048,7 @@ function battleHTML0() {
     ${ai}
     ${switchFor(bi)}
     <h3>Best answers in your party</h3>
-    <table><tbody>${answers.slice(0, 4).map(a => `<tr><td>${spr(a.m.species, 24)}</td><td>${esc(a.m.nick || a.m.species)}</td><td class="small">${esc(a.r.bestOff.label)} ${Math.round(a.r.bestOff.loP)}–${Math.round(a.r.bestOff.hiP)}%</td><td class="small muted">takes ${Math.round(a.r.worstDef.hiP)}%${intimTag(a.r)}</td></tr>`).join('')}</tbody></table>
+    <table><tbody>${answers.slice(0, 4).map(a => `<tr><td>${spr(a.m.species, 24)}</td><td>${esc(a.m.nick || a.m.species)}</td><td class="small">${esc(a.r.bestOff.label)} ${pcap(a.r.bestOff.loP)}–${pcap(a.r.bestOff.hiP)}%</td><td class="small muted">takes ${pcap(a.r.worstDef.hiP)}%${intimTag(a.r)}</td></tr>`).join('')}</tbody></table>
     ${g.length ? `<details><summary>Guide strategy for this fight</summary><div class="guide">${g.map(guideHTML).join('')}</div></details>` : ''}`;
 }
 /* Future bosses: every fight you haven't beaten yet (optional ones too). Pick one to see its team at their levels, the
@@ -1019,7 +1097,7 @@ function bossesHTML() {
     <h3>Their team vs ${party.length ? 'your party' : 'your Pokémon'}</h3>
     <table><tbody>${rows.map(r => `<tr${r === threat && r.kos ? ' class="hl"' : ''}><td>${spr(r.fo.m.s, 24)}</td><td>${esc(r.fo.m.s)}${r.fo.m.it ? `<br><small class="muted">${esc(r.fo.m.it)}</small>` : ''}</td>
       <td class="small">${r.kos ? `<b class="badtxt">KOs ${r.kos}</b>` : '<span class="muted">KOs none</span>'}${r.walled ? `<br><span class="warntxt">walls ${r.walled}</span>` : ''}</td>
-      <td>${r.best ? spr(r.best.me.species, 24) + ' ' + esc(r.best.me.name) : '—'}</td><td class="small muted">${r.best ? Math.round(r.best.r.bestOff.loP) + '–' + Math.round(r.best.r.bestOff.hiP) + '%, takes ' + Math.round(r.best.r.worstDef.hiP) + '%' + intimTag(r.best.r) : ''}</td></tr>`).join('')}</tbody></table>
+      <td>${r.best ? spr(r.best.me.species, 24) + ' ' + esc(r.best.me.name) : '—'}</td><td class="small muted">${r.best ? pcap(r.best.r.bestOff.loP) + '–' + pcap(r.best.r.bestOff.hiP) + '%, takes ' + pcap(r.best.r.worstDef.hiP) + '%' + intimTag(r.best.r) : ''}</td></tr>`).join('')}</tbody></table>
     <p class="small muted">KOs = how many of ${party.length ? 'your party' : 'yours'} it can KO from full HP; walls = how many of yours can't do a third to it. Then your best answer to it.${threat && threat.kos ? ` Biggest threat: <b>${esc(threat.fo.m.s)}</b>.` : ''}</p>
     ${party.length && all.length > party.length ? bossBoxHTML(rows, all.filter(x => !x.party), f) : ''}
     ${guideFor(b).length ? `<details><summary>Guide strategy</summary><div class="guide">${guideFor(b).map(guideHTML).join('')}</div></details>` : ''}
@@ -1034,7 +1112,7 @@ function bossBoxHTML(rows, box, f) {
     return b && r.best && b.r.s > r.best.r.s + 0.5 ? { fo: r.fo, b } : null;
   }).filter(Boolean);
   if (!picks.length) return '';
-  return `<div class="card"><h3>From your boxes</h3><ul class="abl small">${picks.map(x => `<li>${spr(x.b.me.species, 20)} <b>${esc(x.b.me.name)}</b> handles ${spr(x.fo.m.s, 20)} ${esc(x.fo.m.s)} better than your party: ${Math.round(x.b.r.bestOff.loP)}–${Math.round(x.b.r.bestOff.hiP)}%, takes ${Math.round(x.b.r.worstDef.hiP)}%.</li>`).join('')}</ul></div>`;
+  return `<div class="card"><h3>From your boxes</h3><ul class="abl small">${picks.map(x => `<li>${spr(x.b.me.species, 20)} <b>${esc(x.b.me.name)}</b> handles ${spr(x.fo.m.s, 20)} ${esc(x.fo.m.s)} better than your party: ${pcap(x.b.r.bestOff.loP)}–${pcap(x.b.r.bestOff.hiP)}%, takes ${pcap(x.b.r.worstDef.hiP)}%.</li>`).join('')}</ul></div>`;
 }
 // The full line for a future fight (same planner as the Lines tab, with what you can get by that fight).
 function bossLineHTML(o, bi, b, f) {
@@ -1320,7 +1398,7 @@ function tcStartBattle() {
 /* Your Pokémon as they'd be for a fight: every one you have (party and boxes 1-19, so who's in the party doesn't matter),
    at full HP, trained to the cap, and in every fully evolved form it can reach by then (each branch tried), with the
    best moves it can learn or be taught by that point. Cached per fight and save. */
-let nextAtCap = true;
+let nextAtCap = RR; // trained to the cap needs the game's Dex (learnsets): Radical Red only for now
 const capCache = { key: '', list: null };
 function capTeam(o, foes, f) {
   if (!window.RR_DEX) { loadDex(); return null; }
@@ -1382,7 +1460,7 @@ function nextFightHTML(nx) {
     ${sel != null && b.mons[sel] ? bossMonHTML(b, b.mons[sel], f, mine) : ''}
     <h3>Your best answer to each</h3>
     ${nextAtCap && !built ? '<p class="small muted">Loading the Pokédex to evolve and train your Pokémon…</p>' : ''}
-    <table><tbody>${foes.map(fo => { const r = mine.map(me => ({ me, r: scoreIntim(me, fo, f) })).sort(ansCmp)[0]; const nm = r ? (r.me.from && r.me.from.species !== r.me.m.species ? `${esc(r.me.m.nick || r.me.from.species)} <span class="muted">→ ${esc(r.me.m.species)}</span>` : esc(r.me.m.nick || r.me.m.species)) : '—'; return `<tr><td>${spr(fo.m.s, 24)}</td><td>${esc(fo.m.s)}</td><td>${r ? spr(r.me.m.species, 24) + ' ' + nm + capNeeds(r.me, r.r) : '—'}</td><td class="small muted">${r ? esc(r.r.bestOff.label || '') + ' ' + Math.round(r.r.bestOff.loP) + '–' + Math.round(r.r.bestOff.hiP) + '%, takes ' + Math.round(r.r.worstDef.hiP) + '%' + intimTag(r.r) : ''}</td></tr>`; }).join('')}</tbody></table>
+    <table><tbody>${foes.map(fo => { const r = mine.map(me => ({ me, r: scoreIntim(me, fo, f) })).sort(ansCmp)[0]; const nm = r ? (r.me.from && r.me.from.species !== r.me.m.species ? `${esc(r.me.m.nick || r.me.from.species)} <span class="muted">→ ${esc(r.me.m.species)}</span>` : esc(r.me.m.nick || r.me.m.species)) : '—'; return `<tr><td>${spr(fo.m.s, 24)}</td><td>${esc(fo.m.s)}</td><td>${r ? spr(r.me.m.species, 24) + ' ' + nm + capNeeds(r.me, r.r) : '—'}</td><td class="small muted">${r ? esc(r.r.bestOff.label || '') + ' ' + pcap(r.r.bestOff.loP) + '–' + pcap(r.r.bestOff.hiP) + '%, takes ' + pcap(r.r.worstDef.hiP) + '%' + intimTag(r.r) : ''}</td></tr>`; }).join('')}</tbody></table>
     <p class="small muted">${built && built.length ? `Every Pokémon you have (party and boxes) at full HP, trained to Lv ${nx.cap} in each fully evolved form it can reach by then, with the best moves it can learn or be taught by now. So it doesn't change with who's in your party.` : 'Every Pokémon you have (party and boxes) as it is now, at full HP.'}</p>
     ${guideFor(b).length ? `<details open><summary>Guide strategy</summary><div class="guide">${guideFor(b).map(guideHTML).join('')}</div></details>` : '<p class="small muted">The guide doesn\'t cover this fight.</p>'}
     <h3>Coming up</h3>
@@ -1408,7 +1486,7 @@ function swinHTML(foeP, moveName, mons, f) {
   }).filter(Boolean).sort((a, b) => a.rank - b.rank);
   if (!rows.length) return '<span class="muted">No other Pokémon to switch in.</span>';
   return rows.map(r => r.status ? `<span class="swr">${esc(r.me.name)}: status move</span>`
-    : `<span class="swr ${r.ko === 'KO' ? 'badtxt' : r.ko ? 'warntxt' : ''}"><b>${esc(r.me.name)}</b> ${Math.round(r.h.loP)}–${Math.round(r.h.hiP)}%${r.ko ? ' ' + r.ko : ` → ${Math.round(r.left)}% left`}${r.crit ? ` <span class="warntxt" title="${esc(window.RRLines.critTxt(r.crit))}">crit!</span>` : ''}</span>`).join('');
+    : `<span class="swr ${r.ko === 'KO' ? 'badtxt' : r.ko ? 'warntxt' : ''}"><b>${esc(r.me.name)}</b> ${pcap(r.h.loP)}–${pcap(r.h.hiP)}%${r.ko ? ' ' + r.ko : ` → ${Math.round(r.left)}% left`}${r.crit ? ` <span class="warntxt" title="${esc(window.RRLines.critTxt(r.crit))}">crit!</span>` : ''}</span>`).join('');
 }
 function switchTableHTML(foe, mine, f) {
   const moves = (foe.moves || []).filter(n => n && MOVES[n]);
@@ -1430,12 +1508,12 @@ function switchTableHTML(foe, mine, f) {
     if (h.status) return '<td class="muted small">status</td>';
     const ko = h.lo >= me.p.curHP() ? ' <b class="badtxt">KO</b>' : h.hi >= me.p.curHP() ? ' <span class="warntxt">KO?</span>' : '';
     const crit = !ko && h.name ? window.RRLines.deadToCrit(h.att || foe.p, me.p, h.name, field(f, false)) : null;
-    return `<td class="num ${h.hiP >= 50 ? 'warntxt' : ''}">${Math.round(h.loP)}–${Math.round(h.hiP)}%${ko}${crit ? ` <span class="warntxt" title="${esc(window.RRLines.critTxt(crit))}">crit!</span>` : ''}</td>`;
+    return `<td class="num ${h.hiP >= 50 ? 'warntxt' : ''}">${pcap(h.loP)}–${pcap(h.hiP)}%${ko}${crit ? ` <span class="warntxt" title="${esc(window.RRLines.critTxt(crit))}">crit!</span>` : ''}</td>`;
   };
   return `<div class="card"><h3>Switching in on ${esc(foe.name)}</h3>
     <div class="tscroll"><table class="dtab"><thead><tr><th>Yours</th>${moves.map(n => `<th class="small">${esc(n)}</th>`).join('')}<th class="small">You hit back</th></tr></thead><tbody>
     ${rows.map((r, k) => `<tr${k === 0 ? ' class="hl"' : ''}><td>${spr(r.me.species, 24)} ${esc(r.me.name)}<br><small class="muted">${Math.round(r.me.hp)}% · ${r.first === 'you move first' ? 'faster' : r.first === 'they move first' ? 'slower' : 'tie'}</small>${r.intim ? `<br><small class="warntxt">${esc(r.intim)}</small>` : ''}</td>${r.cells.map(h => cell(h, r.me)).join('')}
-      <td class="small">${esc(r.back.label)}<br><b class="num">${Math.round(r.back.loP)}–${Math.round(r.back.hiP)}%</b>${r.back.loP >= foeHP ? ' <b class="goodtxt">KO</b>' : r.back.hiP >= foeHP ? ' <span class="warntxt">KO?</span>' : ''}</td></tr>`).join('')}
+      <td class="small">${esc(r.back.label)}<br><b class="num">${pcap(r.back.loP)}–${pcap(r.back.hiP)}%</b>${r.back.loP >= foeHP ? ' <b class="goodtxt">KO</b>' : r.back.hiP >= foeHP ? ' <span class="warntxt">KO?</span>' : ''}</td></tr>`).join('')}
     </tbody></table></div>
     <p class="small muted">Damage each of its moves does to each of your Pokémon at its HP right now (red KO = guaranteed, KO? = on a high roll, crit! = survives unless it crits; hover for the chance). Safest switch-in first.</p></div>`;
 }
@@ -1461,18 +1539,103 @@ function bossMonHTML(b, m, f, mine, swList) {
     <div class="small" style="margin:4px 0">${m.mv.map(moveChip).join(' ')}</div>
     ${st ? `<div class="stats">${STATK.map((s, i) => `<span><small>${STATL[s]}</small><b class="num">${st[s]}</b><small class="muted num">${bs[i] != null ? bs[i] : ''}</small></span>`).join('')}</div>` : ''}
     ${p ? switchTableHTML({ name: m.s, p, moves: m.mv }, swList || partySwitchList(null), f) : ''}
-    ${ans.length ? `<h3>Your best answers</h3><table><tbody>${ans.map(a => `<tr><td>${spr(a.me.m.species, 24)} ${esc(a.me.m.nick || a.me.m.species)}</td><td class="small">deals ${Math.round(a.r.bestOff.loP)}–${Math.round(a.r.bestOff.hiP)}%<br><span class="muted">${esc(a.r.bestOff.label || '')}</span></td><td class="small">takes up to ${Math.round(a.r.worstDef.hiP)}%<br><span class="muted">${esc(a.r.worstDef.label || '')}</span>${intimTag(a.r)}</td><td class="small ${a.r.fast ? 'good' : 'muted'}">${a.r.fast ? 'faster' : 'slower'}</td></tr>`).join('')}</tbody></table>` : ''}
+    ${ans.length ? `<h3>Your best answers</h3><table><tbody>${ans.map(a => `<tr><td>${spr(a.me.m.species, 24)} ${esc(a.me.m.nick || a.me.m.species)}</td><td class="small">deals ${pcap(a.r.bestOff.loP)}–${pcap(a.r.bestOff.hiP)}%<br><span class="muted">${esc(a.r.bestOff.label || '')}</span></td><td class="small">takes up to ${pcap(a.r.worstDef.hiP)}%<br><span class="muted">${esc(a.r.worstDef.label || '')}</span>${intimTag(a.r)}</td><td class="small ${a.r.fast ? 'good' : 'muted'}">${a.r.fast ? 'faster' : 'slower'}</td></tr>`).join('')}</tbody></table>` : ''}
   </div>`;
+}
+/* ---------- team helper (Team tab, both modes) ----------
+   Pick up to 3 Pokémon you want to use (PREF.core). teamHelper() trains every other candidate to the level cap (your other
+   Pokémon in every evolved form you can reach by now, plus species you can still catch: in a nuzlocke only from routes
+   you haven't used) and ranks them by what they add: Pokémon of your next required fights that they handle and your three
+   don't (scorePair, the Next tab's matchup score), and attacking types your three are weak to that they resist. */
+let thRes = null, thBusy = false;
+function tellMode() { try { if (window.RRAndroid && window.RRAndroid.setMode) window.RRAndroid.setMode(nuz() ? 'nuzlocke' : 'play'); } catch (e) { /* not in the app */ } }
+const ALL_TYPES = ['Normal', 'Fire', 'Water', 'Electric', 'Grass', 'Ice', 'Fighting', 'Poison', 'Ground', 'Flying', 'Psychic', 'Bug', 'Rock', 'Ghost', 'Dragon', 'Dark', 'Steel', 'Fairy'];
+function bst(sp) { const b = SPEC[sp] && SPEC[sp].bs; return b ? b.hp + b.at + b.df + b.sa + b.sd + b.sp : 0; }
+function catchableNow() {
+  // species on the routes you can reach by now (nuzlocke: only routes you haven't used yet), with where
+  const e = encLeft(), rows = nuz() ? e.open : e.open.concat(e.used), out = new Map();
+  rows.forEach(x => x.l.areas.forEach(a => (D.tables[a] || []).forEach(t => t.mons.forEach(mn => { if (isSpecies(mn[0]) && !out.has(mn[0])) out.set(mn[0], x.l.name); }))));
+  return out;
+}
+function teamHelper() {
+  if (!window.RR_DEX) { loadDex(); return { err: 'Still loading the Pokédex, try again in a moment.' }; }
+  const nx = nextOrder(); if (!nx) return { err: 'No upcoming fight found.' };
+  const fights = D.order.filter(o => !o.opt && !orderBeaten(o)).slice(0, 3);
+  const sets = fights.map(o => { const bf = tcBossFoes(o); return { o, foes: bf.foes, f: bossField(bf.b) }; }).filter(x => x.foes.length);
+  if (!sets.length) return { err: 'No upcoming fights to plan for.' };
+  const first = sets[0];
+  const built = capTeam(nx, first.foes, first.f) || [];
+  const core = (PREF.core || []).map(pid => {
+    const forms = built.filter(x => x.from.pid === pid);
+    return forms.length ? forms.reduce((a, x) => (bst(x.m.species) > bst(a.m.species) ? x : a)) : null;
+  }).filter(Boolean);
+  if (!core.length) return { err: 'Pick at least one Pokémon first.' };
+  const corePids = new Set(core.map(c => c.from.pid));
+  // your other Pokémon: their best form each
+  const cands = [], seenFrom = new Set();
+  built.filter(x => !corePids.has(x.from.pid)).sort((a, b) => bst(b.m.species) - bst(a.m.species)).forEach(x => {
+    if (seenFrom.has(x.from.pid)) return; seenFrom.add(x.from.pid);
+    cands.push({ x, mine: true, where: PARTY.includes(x.from) ? 'in your party' : 'in your PC' });
+  });
+  // species you can still catch, trained to the cap the same way
+  const ownFam = new Set(owned().map(m => family(m.species)));
+  const sec = splitSec(), beaten = [...beatenSet()];
+  [...catchableNow()].filter(([sp]) => !ownFam.has(family(sp))).slice(0, 45).forEach(([sp, where]) => {
+    const ab = Object.values((SPEC[sp] && SPEC[sp].abilities) || {})[0] || '';
+    const m = { species: sp, level: nx.cap, nature: 'Hardy', ability: ab, item: '', moves: [], evs: {}, ivs: {}, pid: -1 };
+    let best = null;
+    (RRBuild.fullForms(sp, nx.cap) || []).concat([{ species: sp, path: [] }]).forEach(form => {
+      let path = (form.path || []).map(y => Object.assign({}, y, { item: evoItem(y.how) }));
+      const stop = path.findIndex(y => y.item && y.item.where === null); if (stop >= 0) path = path.slice(0, stop);
+      const spF = path.length ? path[path.length - 1].to : sp;
+      let b = null; try { b = RRBuild.buildAtCap({ m, foes: first.foes, f: first.f, cap: nx.cap, sec: sec == null ? 999 : sec, beaten, nextN: nx.n, form: { species: spF, path } }); } catch (e) { b = null; }
+      const p = b && mk(Object.assign({}, b.opts, { hp: 100, status: '' }));
+      if (p && (!best || bst(b.species) > bst(best.m.species))) best = { m: Object.assign({}, m, { species: b.species }), from: m, moves: b.moves, p, build: b };
+    });
+    if (best) cands.push({ x: best, mine: false, where: 'catch on ' + where });
+  });
+  // defence: how many of your three each attacking type hits super effectively
+  const weak = {}; ALL_TYPES.forEach(t => { weak[t] = core.filter(c => eff(t, types(c.m.species)) >= 2).length; });
+  const coreScore = sets.map(st => st.foes.map(fo => Math.max(...core.map(c => scorePair(c, fo, st.f).s))));
+  const rows = cands.map(c => {
+    const why = [], beats = [];
+    let s = 0;
+    sets.forEach((st, k) => st.foes.forEach((fo, j) => {
+      const mine = scorePair(c.x, fo, st.f).s, have = coreScore[k][j];
+      const w = k === 0 ? 1 : 0.5; // the next fight counts most
+      if (mine > have && mine >= 2) { s += w * (mine - Math.max(have, 0)); if (have < 2) beats.push(fo.name); }
+    }));
+    const t = types(c.x.m.species), cover = [], adds = [];
+    ALL_TYPES.forEach(a => { const e = eff(a, t); if (weak[a] && e <= 0.5) { s += weak[a] * (e === 0 ? 1.5 : 1); cover.push(a); } if (weak[a] >= 2 && e >= 2) { s -= 1.5; adds.push(a); } });
+    if (beats.length) why.push('handles ' + [...new Set(beats)].slice(0, 4).map(esc).join(', ') + ' where your picks struggle');
+    if (cover.length) why.push('resists ' + cover.slice(0, 4).join(', ') + (cover.length > 4 ? '…' : '') + ' (your picks are weak to it)');
+    if (adds.length) why.push('<span class="warntxt">shares the weakness to ' + adds.join(', ') + '</span>');
+    return { c, s, why };
+  }).filter(r => r.s > 0).sort((a, b) => b.s - a.s).slice(0, 6);
+  return { rows, fights: sets.map(st => tc(st.o.name)), cap: nx.cap };
+}
+function teamHelperHTML() {
+  const pool = alive().filter(m => m.level && m.species), core = (PREF.core || []).filter(pid => pool.some(m => m.pid === pid));
+  const strip = `<div class="strip core">${pool.map(m => `<button data-core="${m.pid}" class="${core.includes(m.pid) ? 'on' : ''}" title="${esc((m.nick && m.nick !== m.species ? m.nick + ' (' + m.species + ')' : m.species) + ' Lv' + m.level)}">${spr(m.species, 32)}<small>${esc(m.nick || m.species)}</small></button>`).join('')}</div>`;
+  let res = '';
+  if (thBusy) res = '<p class="small muted">Training everyone to the cap and checking your next fights…</p>';
+  else if (thRes && thRes.err) res = `<p class="small">${esc(thRes.err)}</p>`;
+  else if (thRes) res = `<p class="small muted">At the level cap (Lv ${thRes.cap}), against ${thRes.fights.map(esc).join(', ')}:</p>` +
+    (thRes.rows.length ? thRes.rows.map((r, i) => `<div class="row" style="gap:8px;margin:6px 0">${spr(r.c.x.m.species, 36)}<div style="flex:1;min-width:0"><b>${i + 1}. ${esc(r.c.x.m.species)}</b>${r.c.mine ? ' <span class="tag good">yours' + (r.c.x.from.nick && r.c.x.from.nick !== r.c.x.from.species ? ': ' + esc(r.c.x.from.nick) : '') + '</span>' : ''} <span class="small muted">${esc(r.c.where)}${r.c.x.m.species !== r.c.x.from.species ? ' · evolve from ' + esc(r.c.x.from.species) : ''}</span><div class="small">${r.why.join(' · ') || 'a solid all-round partner'}</div></div></div>`).join('')
+      : '<p class="small">Your picks already cover these fights well: no one adds much.</p>');
+  return `<div class="card"><div class="row between"><h3>Team helper</h3>${core.length ? '<button class="mini" id="thClear">clear</button>' : ''}</div>
+    <p class="small muted">Tap up to 3 Pokémon you want to use, then find the best partners for them${nuz() ? ' (your Pokémon, and what you can still catch on unused routes)' : ' (your Pokémon, and what you can catch by now)'}.</p>${strip}
+    ${core.length ? `<p><button class="back" id="thGo"${thBusy ? ' disabled' : ''}>Find partners</button></p>` : ''}${res}</div>`;
 }
 function teamHTML() {
   const card = m => `<div class="card todex" data-todex="${esc(m.species)}" title="Open ${esc(m.species)} in the Dex"><div class="row">${spr(m.species, 40)}<div style="flex:1;min-width:0"><div class="row between"><b>${esc(m.nick || m.species)}</b><span class="num">Lv ${m.level}</span></div>
     <div class="small muted">${esc(m.species)} · ${abil(m.ability)} · ${esc(m.nature)}${m.item ? ' · ' + esc(m.item) : ''}</div>${m.maxHP ? hpBar(m.hp / m.maxHP * 100) : ''}
     <div class="small">${m.moves.map(moveChip).join(' ')}</div></div></div></div>`;
-  return `<h3>Party</h3>${PARTY.map(card).join('') || '<p class="muted">No party read yet.</p>'}
+  return teamHelperHTML() + `<h3>Party</h3>${PARTY.map(card).join('') || '<p class="muted">No party read yet.</p>'}
     <h3>PC boxes 1–19 <span class="muted">(${PC.length})</span></h3>
-    <div class="strip">${PC.map(m => `<button data-todex="${esc(m.species)}" title="${esc((m.nick || m.species) + ' Lv' + m.level)}">${spr(m.species, 32)}<small>Lv${m.level}</small></button>`).join('') || '<p class="muted">Reading the PC…</p>'}</div>
-    <h3>Graveyard <span class="muted">(boxes 20–25 · ${DEAD.length})</span></h3>
-    <div class="strip dead">${DEAD.map(m => `<button data-todex="${esc(m.species)}" title="${esc((m.nick || m.species) + ' Lv' + m.level + ' · box ' + m.box)}">${spr(m.species, 32)}<small>${esc(m.nick || m.species)}</small></button>`).join('') || '<p class="muted">Nobody yet.</p>'}</div>`;
+    <div class="strip">${PC.map(m => `<button data-todex="${esc(m.species)}" title="${esc((m.nick || m.species) + ' Lv' + m.level)}">${spr(m.species, 32)}<small>Lv${m.level}</small></button>`).join('') || (['b1', 'bbk', 'b2', 'bb2r', 'pt', 'rp', 'hgss'].includes(new URLSearchParams(location.search).get('game')) ? '<p class="muted">The PC boxes are not read on DS games yet. Your party is above.</p>' : '<p class="muted">Reading the PC…</p>')}</div>
+    <h3>${nuz() ? 'Graveyard' : 'PC boxes'} <span class="muted">(boxes 20–25 · ${DEAD.length})</span></h3>
+    <div class="strip${nuz() ? ' dead' : ''}">${DEAD.map(m => `<button data-todex="${esc(m.species)}" title="${esc((m.nick || m.species) + ' Lv' + m.level + ' · box ' + m.box)}">${spr(m.species, 32)}<small>${esc(m.nick || m.species)}</small></button>`).join('') || `<p class="muted">${nuz() ? 'Nobody yet.' : 'Empty.'}</p>`}</div>`;
 }
 /* ---------- cloud saves (PC overlay; the phone app has its own copy of this in its menu) ----------
    main.js keeps the PC save and the cloud save in step every 30 s. When the phone has saved something newer, a banner
@@ -1535,17 +1698,35 @@ if (window.rr.cloud) {
   window.rr.cloud.state().then(s => { CLOUD = s; renderCloud(); }).catch(() => {});
   window.rr.on('cloud', s => { CLOUD = s; renderCloud(); if (tab === 'opts') renderPanel(true); });
 }
+/* Unbound's difficulty: which boss teams to show (the game picks them by the difficulty you started with). Changing it
+   reloads the page, since the teams are loaded with it (ub-select.js). */
+function diffCardHTML() {
+  if (!window.RR_PACKS || Object.keys(window.RR_PACKS).length < 2) return '';
+  const cur = window.RR_DIFF, names = { difficult: 'Difficult', expert: 'Expert', insane: 'Insane', normal: 'Normal', hard: 'Hard' };
+  const GAME_NAME = { unbound: 'Unbound', soulgold: 'SoulGold', imperium: 'Emerald Imperium', swsh: 'Sword and Shield', bb2r: 'Blaze Black 2 Redux', b2: 'Black 2', pt: 'Platinum', rp: 'Renegade Platinum', hgss: 'HeartGold and SoulSilver', b1: 'Black', bbk: 'Blaze Black' }[window.RR_GAME] || 'the game';
+  return `<div class="card"><h3>Difficulty</h3><div class="seg">${Object.keys(names).filter(d => window.RR_PACKS[d]).map(d => `<button data-diff="${d}" class="${d === cur ? 'on' : ''}">${names[d]}</button>`).join('')}</div>
+    <p class="small muted">The one you picked when you started ${GAME_NAME}: boss teams differ for each.${window.RR_GAME === 'unbound' ? " (Vanilla isn't covered.)" : ''}</p></div>`;
+}
+function bindDiff(el) {
+  $$('[data-diff]', el).forEach(b => b.onclick = () => { try { localStorage.setItem('rro-diff-' + window.RR_GAME, b.dataset.diff); } catch (e) { /* ignore */ } location.reload(); });
+}
 function optsHTML() {
-  return cloudCardHTML() + (window.RRTheme ? `<div class="card"><h3>Theme</h3><div id="thmBox">${window.RRTheme.pickerHTML()}</div><p class="small muted">${window.rr.embedded ? 'Shared with the app around it.' : 'Colours for the overlay.'}</p></div>` : '') + `<div class="card"><h2>Overlay settings</h2>
-    <label>Transparency<input type="range" id="oOpacity" min="0.35" max="1" step="0.05"></label>
+  return diffCardHTML() + `<div class="card"><h3>Mode</h3><div class="seg"><button data-mode="nuzlocke" class="${nuz() ? 'on' : ''}">Nuzlocke</button><button data-mode="play" class="${nuz() ? '' : 'on'}">Playthrough</button></div>
+    <p class="small muted">${nuz() ? 'Tracks your encounters: routes used, encounters left, dupes, and boxes 20–25 as the graveyard.' : 'A normal playthrough: everything else stays, without routes used, dead Pokémon or a graveyard (boxes 20–25 count as normal boxes).'}</p></div>` + cloudCardHTML() + (window.RRTheme ? `<div class="card"><h3>Theme</h3><div id="thmBox">${window.RRTheme.pickerHTML()}</div><p class="small muted">${window.rr.embedded ? 'Shared with the app around it.' : 'Colours for the overlay.'}</p></div>` : '') + `<div class="card"><h2>Overlay settings</h2>
+    <label class="pconly">Transparency<input type="range" id="oOpacity" min="0.35" max="1" step="0.05"></label>
     <label class="chk"><input type="checkbox" id="oAuto"${PREF.autoBattle ? ' checked' : ''}> Jump to the Battle tab when a battle starts</label>
     <label class="chk"><input type="checkbox" id="oAI"${PREF.ai ? ' checked' : ''}> Show the AI prediction in battles</label></div>
-    <div class="card"><h3>Hotkeys</h3><p><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd> open the panel and click in (the game pauses)</p><p><kbd>Esc</kbd> back to the game</p><p><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd> hide or show the overlay</p></div>
-    <div class="card"><h3>Pausing</h3><p class="small">The game pauses while you click in here because mGBA's <b>Settings → Interface → Pause when inactive</b> is on. Turn that off in mGBA if you'd rather it keep running.</p></div>
-    <div class="card"><button id="oQuit" style="border:1px solid var(--line);background:none;border-radius:7px;padding:5px 10px">Close the overlay</button></div>`;
+    <div class="card pconly"><h3>Hotkeys</h3><p><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd> open the panel and click in (the game pauses)</p><p><kbd>Esc</kbd> back to the game</p><p><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd> hide or show the overlay</p></div>
+    <div class="card pconly"><h3>Pausing</h3><p class="small">The game pauses while you click in here because mGBA's <b>Settings → Interface → Pause when inactive</b> is on. Turn that off in mGBA if you'd rather it keep running.</p></div>
+    <div class="card pconly"><button id="oQuit" style="border:1px solid var(--line);background:none;border-radius:7px;padding:5px 10px">Close the overlay</button></div>`;
 }
 function bindPanel(el) {
   $$('[data-time]', el).forEach(b => b.onclick = () => { timeSel = b.dataset.time; renderPanel(true); });
+  bindDiff(el);
+  $$('[data-mode]', el).forEach(b => b.onclick = () => { PREF.mode = b.dataset.mode; savePrefs(); tellMode(); capCache.key = ''; thRes = null; lastBarKey = ''; renderBar(); renderPanel(true); });
+  $$('[data-core]', el).forEach(b => b.onclick = () => { const pid = +b.dataset.core, c = (PREF.core || []).filter(x => alive().some(m => m.pid === x)); PREF.core = c.includes(pid) ? c.filter(x => x !== pid) : c.length < 3 ? c.concat(pid) : c; savePrefs(); thRes = null; renderPanel(true); });
+  if ($('#thGo', el)) $('#thGo', el).onclick = () => { thBusy = true; renderPanel(true); setTimeout(() => { try { thRes = teamHelper(); } catch (e) { console.error(e); thRes = { err: String(e) }; } thBusy = false; renderPanel(true); }, 30); };
+  if ($('#thClear', el)) $('#thClear', el).onclick = () => { PREF.core = []; savePrefs(); thRes = null; renderPanel(true); };
   $$('[data-sw]', el).forEach(b => b.onclick = () => { swView = +b.dataset.sw; if (b.dataset.enemy) viewEnemy = +b.dataset.enemy; renderPanel(true); });
   if (tab === 'dex') bindDex(el);
   if ($('#pCopy', el)) $('#pCopy', el).onclick = e => copyScriptLine(e.currentTarget);
@@ -1651,7 +1832,13 @@ setInterval(() => {
 }, 1000);
 window.rr.on('state', s => {
   lastState = Date.now();
-  ST = s; CONN = true; PARTY = decodeParty(s.party, s.partyCount);
+  if (s.dec) {
+    // DS games send their zone; the pack knows each zone's place
+    if (s.zone != null && window.RR_SAVE && window.RR_SAVE.zones) s.mapsec = window.RR_SAVE.zones[s.zone] || 0;
+    // the render cache watches these strings: give it the decoded data to compare
+    s.party = JSON.stringify(s.partyDec || []); s.enemy = JSON.stringify(s.enemyDec || []); s.battleMons = JSON.stringify(s.battlersDec || []);
+  }
+  ST = s; CONN = true; PARTY = s.dec ? decList(s.partyDec) : decodeParty(s.party, s.partyCount);
   const inB = !!s.inBattle;
   if (!inB && wasBattle) steerOn = false;
   if (inB && !wasBattle) { viewEnemy = null; swView = null; if (PREF.autoBattle) tab = 'battle'; }
@@ -1688,4 +1875,7 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') window.rr.ba
 window.addEventListener('load', () => { lastBarKey = ''; renderBar(); renderPanel(true); });
 window.rr.settings().then(s => setMode(s.mode || 'bar', false));
 renderBar();
+tellMode();
+if (!RR && !window.RR_DEX_FILE) $$('#tabs [data-tab="dex"]').forEach(b => { b.style.display = 'none'; });
+if (!RR && !window.RR_ITEMS) $$('#tabs [data-tab="items"]').forEach(b => { b.style.display = 'none'; }); // a pack with item data (Unbound) keeps its Items tab
 })();

@@ -96,3 +96,21 @@ body { padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-are
 #cloudMenu input { flex: 1; min-width: 0; font: inherit; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); }
 /* landscape: the grid has no row for it, so it floats over the top of the game until you answer it */
 @media (orientation: landscape) and (max-height: 600px) { #cloudBanner { position: fixed; z-index: 15; top: calc(4px + env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); width: min(560px, 94vw); border: 1px solid rgba(var(--accent-rgb), .6); border-radius: 12px; background: var(--glass); box-shadow: 0 6px 24px rgba(0,0,0,.5); } }
+
+/* Mac / desktop (a mouse or trackpad and a wide window): the game large on the left, the overlay always open on the
+   right, no on-screen pad (keyboard or controller), the keys listed under the game. Comes after the phone landscape
+   block so it wins when a laptop window is short. */
+#keys { display: none; }
+@media (hover: hover) and (pointer: fine) and (min-width: 900px) {
+  #app { display: grid; grid-template-columns: minmax(0, 1fr) clamp(380px, 34vw, 560px); grid-template-rows: auto minmax(0, 1fr) auto; max-width: none; height: 100%; }
+  #bar { grid-column: 1 / -1; padding: 6px 14px; border-bottom: 1px solid var(--line); }
+  #screenWrap { grid-column: 1; grid-row: 2; aspect-ratio: auto; height: 100%; }
+  #canvas { object-fit: contain; }
+  #switch, #pad { display: none !important; }
+  #overlay { grid-column: 2; grid-row: 2 / 4; display: block !important; border-left: 1px solid var(--line); }
+  #keys { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 14px; grid-column: 1; grid-row: 3; padding: 8px 12px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--line); }
+  #keys kbd { font: 600 11px ui-monospace, Menlo, monospace; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px; padding: 1px 6px; margin-right: 4px; }
+  #welcome { display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; }
+  #welcome p { max-width: 460px; }
+  .modal { left: 50%; right: auto; width: min(620px, 100vw); transform: translateX(-50%); border-left: 1px solid var(--line); border-right: 1px solid var(--line); }
+}

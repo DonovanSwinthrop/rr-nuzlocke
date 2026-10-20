@@ -1,0 +1,112 @@
+/* The RUN tab's pixel look: stepped corners, a dark outer line and a lighter inner line (Platinum-like menus), flat pixel HP
+   bars, the app's pixel font. Everything is drawn here in CSS: no game graphics. It applies only while themes.js has set
+   html[data-style="pixel"] (Settings > Theme > Pixel); "Classic" leaves overlay.css's look alone. The colours come from the
+   palette's variables (themes.js applyPixel): --pwin --pwin2 --pframe --plight --pbtn, plus --ink --muted --accent. */
+@font-face { font-family: "Pixel Operator"; src: url("PixelOperator.ttf"); }
+
+html[data-style="pixel"], html[data-style="pixel"] body { font-family: "Pixel Operator", monospace; font-size: 16px; line-height: 1.25; }
+html[data-style="pixel"] * { font-family: "Pixel Operator", monospace; font-weight: normal; letter-spacing: 0; }
+html[data-style="pixel"] #panel { font-size: 16px; }
+
+/* the whole panel: square, two-tone frame */
+html[data-style="pixel"] #shell { background: var(--pwin); border: 4px solid var(--pframe); border-radius: 0; box-shadow: inset 0 0 0 3px var(--plight); }
+html[data-style="pixel"].web, html[data-style="pixel"].web body { background: var(--pframe); }
+html[data-style="pixel"] #top { padding: 8px 10px; }
+html[data-style="pixel"] #summary b { font-size: 17px; }
+html[data-style="pixel"] #summary small { font-size: 14px; }
+html[data-style="pixel"] .dot { border-radius: 0; }
+html[data-style="pixel"] .pm i { border-radius: 0; height: 4px; }
+
+/* tabs and buttons: pixel buttons */
+html[data-style="pixel"] #tabs { gap: 6px; padding: 4px 8px 8px; border-bottom: 0; }
+html[data-style="pixel"] #tabs button { background: var(--pbtn); color: var(--ink); border: 3px solid var(--pframe); border-radius: 0; box-shadow: inset 0 0 0 2px var(--plight); padding: 5px 2px 4px; font-size: 16px; }
+html[data-style="pixel"] #tabs button.on { background: var(--accent); color: var(--on-accent); box-shadow: inset 0 0 0 2px var(--pwin); border-color: var(--pframe); }
+html[data-style="pixel"] #tabs button.flash { color: var(--accent); }
+html[data-style="pixel"] .back, html[data-style="pixel"] .mini, html[data-style="pixel"] #bBack, html[data-style="pixel"] .codeline button, html[data-style="pixel"] .thmacc button, html[data-style="pixel"] #oQuit {
+  background: var(--pbtn); color: var(--ink); border: 3px solid var(--pframe); border-radius: 0; box-shadow: inset 0 0 0 2px var(--plight); padding: 3px 10px 2px; }
+html[data-style="pixel"] #bBack, html[data-style="pixel"] #bCopy { background: var(--accent) !important; color: var(--on-accent) !important; }
+html[data-style="pixel"] .link { background: none; border: 0; box-shadow: none; color: var(--accent); }
+
+/* windows: every card is a pixel window with notched corners */
+html[data-style="pixel"] .card, html[data-style="pixel"] .mvcard, html[data-style="pixel"] .cloudbar, html[data-style="pixel"] .codeline {
+  background: var(--pwin2); border: 4px solid var(--pframe); border-radius: 0; box-shadow: inset 0 0 0 3px var(--plight); padding: 8px 10px; margin-bottom: 10px;
+  clip-path: polygon(0 8px, 4px 8px, 4px 4px, 8px 4px, 8px 0, calc(100% - 8px) 0, calc(100% - 8px) 4px, calc(100% - 4px) 4px, calc(100% - 4px) 8px, 100% 8px, 100% calc(100% - 8px), calc(100% - 4px) calc(100% - 8px), calc(100% - 4px) calc(100% - 4px), calc(100% - 8px) calc(100% - 4px), calc(100% - 8px) 100%, 8px 100%, 8px calc(100% - 4px), 4px calc(100% - 4px), 4px calc(100% - 8px), 0 calc(100% - 8px)); }
+html[data-style="pixel"] .card.todex:hover { border-color: var(--accent); }
+html[data-style="pixel"] .mvcard { clip-path: none; }
+html[data-style="pixel"] h2 { font-size: 20px; margin: 2px 0 6px; }
+html[data-style="pixel"] h3 { font-size: 15px; letter-spacing: 0; margin: 12px 0 6px; }
+html[data-style="pixel"] .small { font-size: 14px; }
+html[data-style="pixel"] .num { font-size: 14px; }
+html[data-style="pixel"] .now { font-size: 18px; }
+html[data-style="pixel"] hr { border: 0; border-top: 3px dotted var(--plight); }
+
+/* the segmented switch: separate pixel buttons */
+html[data-style="pixel"] .seg { border: 0; border-radius: 0; gap: 4px; overflow: visible; }
+html[data-style="pixel"] .seg button { background: var(--pbtn); color: var(--ink); border: 3px solid var(--pframe); border-radius: 0; padding: 3px 10px 2px; font-size: 15px; }
+html[data-style="pixel"] .seg button.on { background: var(--accent); color: var(--on-accent); }
+
+/* tags and chips */
+html[data-style="pixel"] .tag, html[data-style="pixel"] .tc, html[data-style="pixel"] .wtag, html[data-style="pixel"] .fx, html[data-style="pixel"] .stages span {
+  border-radius: 0; border: 2px solid var(--pframe); font-size: 13px; padding: 0 5px; text-transform: none; }
+html[data-style="pixel"] .tag.top { background: var(--accent); color: var(--on-accent); }
+html[data-style="pixel"] .tag.good, html[data-style="pixel"] .stages .up { background: var(--good); color: var(--pwin); }
+html[data-style="pixel"] .tag.avoid, html[data-style="pixel"] .stages .down { background: var(--bad); color: var(--pwin); }
+html[data-style="pixel"] .tag.own { background: var(--warn); color: var(--pwin); }
+html[data-style="pixel"] .tc { color: #fff; text-shadow: 1px 1px 0 rgba(0,0,0,.5); }
+
+/* HP bars: flat pixel bars in a dark frame */
+html[data-style="pixel"] .hp { height: 12px; padding: 2px; background: var(--pframe); border-radius: 0; overflow: hidden; margin: 4px 0; }
+html[data-style="pixel"] .hp em { border-radius: 0; background: var(--good); }
+html[data-style="pixel"] .hp em.mid { background: var(--warn); } html[data-style="pixel"] .hp em.low { background: var(--bad); }
+html[data-style="pixel"] .sbars i { border-radius: 0; height: 9px; background: var(--pframe); }
+html[data-style="pixel"] .hpp { font-size: 14px; }
+
+/* tables and lists */
+html[data-style="pixel"] table { font-size: 15px; }
+html[data-style="pixel"] td, html[data-style="pixel"] th { border-bottom: 3px dotted var(--plight); padding: 4px 4px 3px; }
+html[data-style="pixel"] th { font-size: 13px; text-transform: none; color: var(--muted); }
+html[data-style="pixel"] tr.hl td { background: rgba(var(--accent-rgb), .22); }
+html[data-style="pixel"] .mv { border-left: 6px solid var(--tc, var(--accent)); padding-left: 6px; }
+html[data-style="pixel"] .dmg li { border-bottom: 3px dotted var(--plight); }
+html[data-style="pixel"] .dexrow { border-bottom: 3px dotted var(--plight); }
+html[data-style="pixel"] .dexrow:hover, html[data-style="pixel"] .dexrow.on, html[data-style="pixel"] .mvrow:hover, html[data-style="pixel"] .mvrow.open { background: rgba(var(--accent-rgb), .16); }
+html[data-style="pixel"] .line li, html[data-style="pixel"] .adv { border-radius: 0; background: var(--pwin); border: 3px solid var(--plight); border-left-width: 6px; }
+html[data-style="pixel"] .guide p, html[data-style="pixel"] .guide li { color: var(--ink); font-size: 15px; }
+html[data-style="pixel"] .stats span { border-radius: 0; background: var(--pwin); border: 3px solid var(--plight); }
+html[data-style="pixel"] .stats small { font-size: 12px; }
+html[data-style="pixel"] .tcrow, html[data-style="pixel"] .build { border-top: 3px dotted var(--plight); }
+
+/* sprites keep their pictures; the box around them is a pixel frame */
+html[data-style="pixel"] .strip { gap: 6px; }
+html[data-style="pixel"] .strip button { background: var(--pwin); border: 3px solid var(--pframe); border-radius: 0; box-shadow: inset 0 0 0 2px var(--plight); padding: 2px; width: 56px; }
+html[data-style="pixel"] .strip.core button { width: auto; min-width: 56px; padding: 2px 4px; }
+html[data-style="pixel"] .strip button.on { background: var(--accent); box-shadow: inset 0 0 0 2px var(--pwin); }
+html[data-style="pixel"] .strip button.on small { color: var(--on-accent); }
+html[data-style="pixel"] .strip small { font-size: 12px; color: var(--muted); }
+html[data-style="pixel"] .ph { border-radius: 0; }
+
+/* inputs */
+html[data-style="pixel"] select, html[data-style="pixel"] #dq, html[data-style="pixel"] #dtype, html[data-style="pixel"] #itQ, html[data-style="pixel"] input[type=search], html[data-style="pixel"] input[type=text] {
+  background: var(--pwin); color: var(--ink); border: 3px solid var(--pframe); border-radius: 0; box-shadow: inset 0 0 0 2px var(--plight); padding: 4px 6px 3px; font-size: 16px; }
+html[data-style="pixel"] #dtype option { background: var(--pwin); }
+html[data-style="pixel"] input[type=range] { accent-color: var(--accent); }
+html[data-style="pixel"] .thmacc input[type=color] { border: 3px solid var(--pframe); border-radius: 0; width: 44px; height: 28px; }
+
+/* the theme / palette picker */
+html[data-style="pixel"] .themes { gap: 8px; }
+html[data-style="pixel"] .thm { border: 3px solid var(--pframe); border-radius: 0; background: var(--pbtn); color: var(--ink); box-shadow: inset 0 0 0 2px var(--plight); font-size: 15px; padding: 6px 8px 5px; }
+html[data-style="pixel"] .thm i { border-radius: 0; width: 20px; height: 20px; border: 3px solid; }
+html[data-style="pixel"] .thm.on { background: var(--accent); color: var(--on-accent); box-shadow: inset 0 0 0 2px var(--pwin); }
+html[data-style="pixel"] .thstyle { margin: 4px 0 6px; }
+
+/* scrollbar and the rest */
+html[data-style="pixel"] #panel::-webkit-scrollbar { width: 12px; }
+html[data-style="pixel"] #panel::-webkit-scrollbar-track { background: var(--pwin2); }
+html[data-style="pixel"] #panel::-webkit-scrollbar-thumb { background: var(--plight); border: 3px solid var(--pframe); border-radius: 0; }
+html[data-style="pixel"] .spin { border-radius: 0; animation-timing-function: steps(8); }
+html[data-style="pixel"] .empty { color: var(--muted); }
+html[data-style="pixel"] details summary { color: var(--accent); }
+html[data-style="pixel"] #drawErr { border-radius: 0; background: var(--bad); color: var(--pwin); }
+html[data-style="pixel"] #foot { background: var(--pwin2); border-top: 3px solid var(--plight); }
+html[data-style="pixel"] .thmacc { font-size: 15px; }
+html[data-style="pixel"] input[type=checkbox] { accent-color: var(--accent); width: 20px; height: 20px; }

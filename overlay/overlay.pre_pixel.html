@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta charset="utf-8">
+<title>RR Overlay</title>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'">
+<link rel="stylesheet" href="overlay.css">
+<script src="themes.js"></script>
+<link rel="manifest" href="manifest.webmanifest">
+</head>
+<body class="bar">
+<div id="shell">
+  <header id="top">
+    <span id="dot" class="dot off" title="Not connected to mGBA"></span>
+    <div id="summary"><b>Waiting for mGBA…</b><small>Load rr_overlay.lua in mGBA (Tools → Scripting)</small></div>
+    <div id="partyMini"></div>
+    <div class="ctl">
+      <button id="bCopy" hidden title="Copy the line to paste into mGBA's Scripting window">Copy line</button>
+      <button id="bExpand" title="Open the panel (Ctrl+Shift+P)">▾</button>
+      <button id="bHide" title="Minimize to the taskbar (click it there, or Ctrl+Shift+O, to bring it back)">–</button>
+    </div>
+  </header>
+  <nav id="tabs">
+    <button data-tab="route">Route</button>
+    <button data-tab="battle">Battle</button>
+    <button data-tab="next" title="Next fight">Next</button>
+    <button data-tab="team">Team</button>
+    <button data-tab="dex">Dex</button>
+    <button data-tab="lines" title="Battle lines and live steering (opt-in help)">Lines</button>
+    <button data-tab="items" title="Where to find items, TMs and tutors">Items</button>
+    <button data-tab="opts" title="Settings">⚙</button>
+  </nav>
+  <div id="cloudBar" hidden></div>
+  <div id="drawErr" hidden></div>
+  <main id="panel"></main>
+  <footer id="foot">
+    <span id="pauseNote">Game paused while you're in here</span>
+    <button id="bBack">Back to game <kbd>Esc</kbd></button>
+  </footer>
+</div>
+<script src="rr-web.js"></script>
+<script src="engine.js"></script>
+<script src="game-select.js"></script><!-- Radical Red (default) or ?game=unbound: writes the game's data scripts -->
+<script src="savereader.js"></script>
+<script src="core.js"></script>
+<script src="lines.js"></script>
+<script src="builder.js"></script>
+<script src="linebuild.js"></script>
+<script src="overlay.js"></script>
+<script src="sprites.js" defer></script>
+</body>
+</html>

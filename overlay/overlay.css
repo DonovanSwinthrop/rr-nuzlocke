@@ -79,6 +79,8 @@ tr.hl td { background: rgba(var(--accent-rgb),.12); }
 .strip { display: flex; flex-wrap: wrap; gap: 4px; }
 .strip button { border: 1px solid var(--line); background: rgba(var(--tint),.04); border-radius: 8px; padding: 2px; display: grid; justify-items: center; width: 50px; }
 .strip button.on { border-color: var(--accent); }
+/* Team helper: the chip grows to the whole name (Gen 5 names run to 10+ letters) */
+.strip.core button { width: auto; min-width: 50px; padding: 2px 4px; }
 .strip button.fainted { opacity: .35; }
 .strip small { font-size: 10px; color: var(--muted); }
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
@@ -151,6 +153,8 @@ html.web #panel { font-size: 14px; }
 html.embedded #top { display: none; }
 html.embedded #foot { display: flex !important; }
 html.embedded #pauseNote { display: none !important; }
+html.android #foot { display: none !important; }
+html.android .pconly { display: none !important; } /* transparency, keyboard hotkeys, mGBA pausing, close: PC overlay only */ /* the companion app has no "back to game": the game is on the other screen */
 /* phone app: no text selection or long-press menus while tapping around */
 html.embedded, html.embedded * { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
 html.embedded input, html.embedded select { -webkit-user-select: auto; user-select: auto; }
